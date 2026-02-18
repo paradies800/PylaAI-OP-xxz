@@ -30,11 +30,14 @@ key_coords_dict = {
 }
 
 directions_xy_deltas_dict = {
-    "w": (0, -100),
-    "a": (-100, 0),
-    "s": (0, 100),
-    "d": (100, 0),
+    "w": (0, -150),
+    "a": (-150, 0),
+    "s": (0, 150),
+    "d": (150, 0),
 }
+
+BRAWL_STARS_PACKAGE = "com.supercell.brawlstars"
+
 
 class WindowController:
     def __init__(self):
@@ -87,6 +90,8 @@ class WindowController:
         self.are_we_moving = False
         self.PID_JOYSTICK = 1  # ID for WASD movement
         self.PID_ATTACK = 2  # ID for clicks/attacks
+        self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
+        self.time_since_checked_if_brawl_stars_crashed = time.time()
 
     def get_latest_frame(self):
         """
@@ -102,6 +107,15 @@ class WindowController:
             return self.last_frame.copy()
 
     def screenshot(self, array=False):
+        c_time = time.time()
+        if c_time - self.time_since_checked_if_brawl_stars_crashed > self.check_if_brawl_stars_crashed_timer:
+            if self.device.app_current().package != BRAWL_STARS_PACKAGE:
+                print("Brawl stars has crashed ! Restarting...")
+                self.device.app_start(BRAWL_STARS_PACKAGE)
+                time.sleep(3)
+                self.time_since_checked_if_brawl_stars_crashed = time.time()
+            else:
+                self.time_since_checked_if_brawl_stars_crashed = c_time
         frame = self.get_latest_frame()
 
         while frame is None:
@@ -160,22 +174,22 @@ class WindowController:
             self.touch_move(self.joystick_x + delta_x, self.joystick_y + delta_y, pointer_id=self.PID_JOYSTICK)
             self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
 
-    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True):
+    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True, touch_up=True, touch_down=True):
         if not already_include_ratio:
             x = x * self.width_ratio
             y = y * self.height_ratio
         # Use PID_ATTACK for clicks so we don't interrupt movement
-        self.touch_down(x, y, pointer_id=self.PID_ATTACK)
+        if touch_down: self.touch_down(x, y, pointer_id=self.PID_ATTACK)
         time.sleep(delay)
-        self.touch_up(x, y, pointer_id=self.PID_ATTACK)
+        if touch_up: self.touch_up(x, y, pointer_id=self.PID_ATTACK)
 
-    def press_key(self, key, delay=0.05):
+    def press_key(self, key, delay=0.05, touch_up=True, touch_down=True):
         if key not in key_coords_dict:
             return
         x, y = key_coords_dict[key]
         target_x = x * self.width_ratio
         target_y = y * self.height_ratio
-        self.click(target_x, target_y, delay)
+        self.click(target_x, target_y, delay, touch_up=touch_up, touch_down=touch_down)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration=0.2):
         # FIX for TypeError: ControlSender.swipe()
