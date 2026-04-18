@@ -39,6 +39,7 @@ def pyla_main(data):
                 self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
             except ValueError:
                 self.max_ips = None
+            self.visual_debug = load_toml_as_dict("cfg/general_config.toml").get('visual_debug', 'no') == "yes"
             self.run_for_minutes = int(load_toml_as_dict("cfg/general_config.toml")['run_for_minutes'])
             self.start_time = time.time()
             self.time_to_stop = False
@@ -119,7 +120,7 @@ def pyla_main(data):
 
                 if abs(s_time - time.time()) > 1:
                     elapsed = time.time() - s_time
-                    if elapsed > 0:
+                    if elapsed > 0 and not self.visual_debug:
                         print(f"{c / elapsed:.2f} IPS")
                     s_time = time.time()
                     c = 0

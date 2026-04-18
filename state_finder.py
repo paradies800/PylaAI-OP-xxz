@@ -23,7 +23,7 @@ if super_debug:
     if not os.path.exists(debug_folder):
         os.makedirs(debug_folder)
 
-def is_template_in_region(image, template_path, region):
+def is_template_in_region(image, template_path, region, threshold=0.7):
     current_height, current_width = image.shape[:2]
     orig_x, orig_y, orig_width, orig_height = region
     width_ratio, height_ratio = current_width / orig_screen_width, current_height / orig_screen_height
@@ -36,7 +36,7 @@ def is_template_in_region(image, template_path, region):
     result = cv2.matchTemplate(cropped_image, loaded_template,
                                cv2.TM_CCOEFF_NORMED)
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-    return max_val > 0.7
+    return max_val > threshold
 
 cached_templates = {}
 
@@ -51,7 +51,35 @@ def load_template(image_path, width, height):
     return resized_image
 
 crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
+_current_gamemode = load_toml_as_dict("./cfg/bot_config.toml").get("gamemode", "")
+
+# Showdown has place-based results (1st-4th in trio) instead of victory/defeat.
+# Each place may have multiple template variants (different backgrounds at
+# different trophy ranges). Any matching variant counts as that place.
+showdown_place_templates = {
+    "1st": ["sd1st.png"],
+    "2nd": ["sd2nd.png"],
+    "3rd": ["sd3rd.png", "sd3rd_alt.png"],
+    "4th": ["sd4th.png"],
+}
+
+
+SHOWDOWN_PLACE_THRESHOLD = 0.85
+
+
 def find_game_result(screenshot):
+    if _current_gamemode == "showdown":
+        for place, template_files in showdown_place_templates.items():
+            for template_file in template_files:
+                if is_template_in_region(
+                    screenshot,
+                    end_results_path + template_file,
+                    crop_region,
+                    threshold=SHOWDOWN_PLACE_THRESHOLD,
+                ):
+                    return place
+        return False
+
     is_victory = is_template_in_region(screenshot, end_results_path + 'victory.png', crop_region)
     if is_victory:
         return "victory"

@@ -55,6 +55,11 @@ class StageManager:
         brawler_list = [brawler["brawler"] for brawler in brawlers_data]
         self.Trophy_observer = TrophyObserver(brawler_list)
         self.time_since_last_stat_change = time.time()
+        # Guards against recording trophies twice when end_game() is re-entered
+        # on the same end-of-match screen (e.g. because the dismiss button
+        # didn't clear the screen before the outer loop called us again).
+        self.last_recorded_result_time = 0.0
+        self.last_recorded_result = None
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
         self.play_again_on_win = load_toml_as_dict("./cfg/bot_config.toml")["play_again_on_win"] == "yes"
         self.window_controller = window_controller
@@ -66,6 +71,11 @@ class StageManager:
             'end_draw': self.end_game,
             'end_victory': self.end_game,
             'end_defeat': self.end_game,
+            # Showdown trio: finishing places 1-4
+            'end_1st': self.end_game,
+            'end_2nd': self.end_game,
+            'end_3rd': self.end_game,
+            'end_4th': self.end_game,
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
             'trophy_reward': lambda: self.window_controller.press_key("Q")
@@ -170,16 +180,31 @@ class StageManager:
         current_state = get_state(screenshot)
         button_pressed = False
         end_screen_time = time.time()
-        
-        while current_state.startswith("end") and time.time() - end_screen_time < 25:
-            if time.time() - self.time_since_last_stat_change > 10:
 
-                # , current_brawler=self.brawlers_pick_data[0]['brawler']
+        # If this is a re-entry on the same lingering end-of-match screen
+        # (happened within the last 60s), skip recording and just keep trying
+        # to dismiss it.
+        current_result = current_state.split("_", 1)[1] if current_state.startswith("end_") else None
+        already_recorded = (
+            current_result is not None
+            and self.last_recorded_result == current_result
+            and time.time() - self.last_recorded_result_time < 60
+        )
+        stats_recorded = already_recorded
+        if already_recorded:
+            found_game_result = current_result
+            print(f"end_game: re-entry on '{current_state}', skipping trophy update")
+
+        while current_state.startswith("end") and time.time() - end_screen_time < 25:
+            if not stats_recorded:
                 found_game_result = current_state.split("_")[1]
                 current_brawler = self.brawlers_pick_data[0]['brawler']
                 self.Trophy_observer.add_trophies(found_game_result, current_brawler)
                 self.Trophy_observer.add_win(found_game_result)
                 self.time_since_last_stat_change = time.time()
+                self.last_recorded_result = found_game_result
+                self.last_recorded_result_time = time.time()
+                stats_recorded = True
                 values = {
                     "trophies": self.Trophy_observer.current_trophies,
                     "wins": self.Trophy_observer.current_wins
@@ -218,22 +243,21 @@ class StageManager:
                         self.window_controller.close()
                         sys.exit(0)
             
-            if not button_pressed:
-                if self.play_again_on_win and found_game_result == "victory":
-                    self.window_controller.press_key("F")
-                else:
-                    print("Game has ended, pressing Q")
-                    self.window_controller.press_key("Q")
-                    time.sleep(2)
-                    print("Pressing Q again")
-                    self.window_controller.press_key("Q")
-                button_pressed = True
-            
-            time.sleep(0.5)
+            # Keep pressing the dismiss key on every iteration until the
+            # end-of-match screens give way. One press is rarely enough in
+            # showdown: after the place screen there can be star drops,
+            # trophy rewards, and offers to dismiss.
+            if self.play_again_on_win and found_game_result in ("victory", "1st", "2nd"):
+                self.window_controller.press_key("F")
+            else:
+                self.window_controller.press_key("Q")
+            button_pressed = True
+
+            time.sleep(1.0)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot)
         
-        if self.play_again_on_win and found_game_result == "victory":
+        if self.play_again_on_win and found_game_result in ("victory", "1st", "2nd"):
             print("Waiting for match to start...")
             start_wait_time = time.time()
             while time.time() - start_wait_time < 25:

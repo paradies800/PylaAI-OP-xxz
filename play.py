@@ -9,6 +9,11 @@ from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
 
 brawl_stars_width, brawl_stars_height = 1920, 1080
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
+visual_debug = load_toml_as_dict("cfg/general_config.toml").get('visual_debug', 'no') == "yes"
+
+def vlog(*args):
+    if visual_debug:
+        print("[DBG]", *args)
 super_crop_area = load_toml_as_dict("./cfg/lobby_config.toml")['pixel_counter_crop_area']['super']
 gadget_crop_area = load_toml_as_dict("./cfg/lobby_config.toml")['pixel_counter_crop_area']['gadget']
 hypercharge_crop_area = load_toml_as_dict("./cfg/lobby_config.toml")['pixel_counter_crop_area']['hypercharge']
@@ -42,6 +47,17 @@ class Movement:
         self.is_hypercharge_ready = False
         self.window_controller = window_controller
         self.TILE_SIZE = 60
+        # Separate unstuck state for analog (angle-based) movement, so the
+        # existing string-based unstuck for other game modes is untouched.
+        self.fix_angle_state = {
+            "delay_to_trigger": bot_config["unstuck_movement_delay"],
+            "duration": bot_config["unstuck_movement_hold_time"],
+            "toggled": False,
+            "started_at": time.time(),
+            "last_angle": None,
+            "last_angle_change": time.time(),
+            "fixed_angle": None,
+        }
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -95,6 +111,19 @@ class Movement:
         return random_movement
 
     @staticmethod
+    def angle_from_direction(dx: float, dy: float) -> float:
+        """Return joystick angle in degrees from a direction vector.
+
+        Uses screen coordinates: 0° = right, 90° = down, 180° = left, 270° = up.
+        """
+        return math.degrees(math.atan2(dy, dx)) % 360
+
+    @staticmethod
+    def angle_opposite(angle_degrees: float) -> float:
+        """Return the opposite direction angle (retreat)."""
+        return (angle_degrees + 180) % 360
+
+    @staticmethod
     def reverse_movement(movement):
         # Create a translation table
         movement = movement.lower()
@@ -108,6 +137,9 @@ class Movement:
         if self.fix_movement_keys['toggled']:
             if current_time - self.fix_movement_keys['started_at'] > self.fix_movement_keys['duration']:
                 self.fix_movement_keys['toggled'] = False
+                vlog("unstuck: finished")
+            else:
+                vlog(f"unstuck: active → {self.fix_movement_keys['fixed']}")
 
             return self.fix_movement_keys['fixed']
 
@@ -132,10 +164,60 @@ class Movement:
             self.fix_movement_keys['fixed'] = reversed_movement
             self.fix_movement_keys['toggled'] = True
             self.fix_movement_keys['started_at'] = current_time
-            #print(f"REVERSED! from {movement} to {reversed_movement}!")
+            vlog(f"unstuck triggered: {movement} → {reversed_movement}")
             return reversed_movement
 
         return movement
+
+    def unstuck_angle_if_needed(self, angle: float, current_time: float = None) -> float:
+        """Unstuck routine for analog joystick movement.
+
+        Works by tracking how long the requested angle has stayed roughly the
+        same (±20°). If it has been locked for longer than delay_to_trigger,
+        we assume the bot is pressed against something the wall detector
+        missed and we force a ~135° deflection for `duration` seconds to
+        wiggle free.
+        """
+        if current_time is None:
+            current_time = time.time()
+
+        state = self.fix_angle_state
+
+        # If an unstuck deflection is already active, keep using it until it expires
+        if state['toggled']:
+            if current_time - state['started_at'] > state['duration']:
+                state['toggled'] = False
+                state['last_angle'] = angle
+                state['last_angle_change'] = current_time
+                vlog("unstuck(angle): finished")
+                return angle
+            vlog(f"unstuck(angle): active → {state['fixed_angle']:.1f}°")
+            return state['fixed_angle']
+
+        # Track how long the commanded angle has been (roughly) unchanged
+        if state['last_angle'] is None:
+            state['last_angle'] = angle
+            state['last_angle_change'] = current_time
+            return angle
+
+        diff = abs((angle - state['last_angle'] + 180) % 360 - 180)
+        if diff > 20:
+            state['last_angle'] = angle
+            state['last_angle_change'] = current_time
+            return angle
+
+        # Angle has stayed similar — check if it has been long enough to trigger
+        if current_time - state['last_angle_change'] > state['delay_to_trigger']:
+            # Deflect by ±135° (random side) to wiggle around the obstacle
+            offset = random.choice((135.0, -135.0))
+            deflected = (angle + offset) % 360
+            state['fixed_angle'] = deflected
+            state['toggled'] = True
+            state['started_at'] = current_time
+            vlog(f"unstuck(angle) triggered: {angle:.1f}° → {deflected:.1f}°")
+            return deflected
+
+        return angle
 
 
 class Play(Movement):
@@ -172,12 +254,16 @@ class Play(Movement):
         }
         self.time_since_last_proceeding = time.time()
 
-        self.last_movement = ''
+        self.last_movement = None
         self.last_movement_time = time.time()
+        self.locked_teammate = None
+        self.locked_teammate_distance = float('inf')
+        self.teammate_hysteresis = 0.20  # Switch only if another teammate is 20% closer
         self.wall_history = []
         self.wall_history_length = 3  # Number of frames to keep walls
         self.scene_data = []
-        self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball"]
+        self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball", "showdown"]
+        self.is_showdown = bot_config["gamemode"] == "showdown"
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
         self.gadget_pixels_minimum = bot_config["gadget_pixels_minimum"]
@@ -187,6 +273,11 @@ class Play(Movement):
         self.entity_detection_confidence = bot_config["entity_detection_confidence"]
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = load_toml_as_dict("cfg/bot_config.toml")["seconds_to_hold_attack_after_reaching_max"]
+        self.current_frame = None
+        # Fog color (poison gas in showdown) — sampled from images/fog_sample.png.
+        # Narrow range because the fog fully overlays whatever is under it.
+        self.fog_hsv_low = (50, 95, 215)
+        self.fog_hsv_high = (60, 125, 245)
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -253,6 +344,198 @@ class Play(Movement):
             # If no movement is possible, return empty string
             return preferred_movement
 
+    def detect_fog_direction(self, frame, player_position):
+        """Find the dominant fog direction relative to the player.
+
+        Builds an HSV mask of the fog color and computes the centroid of fog
+        pixels. Returns the angle FROM the player TO the fog centroid (degrees),
+        or None if there is not enough fog in the frame.
+        """
+        if frame is None:
+            return None
+
+        import numpy as np
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        low = np.array(self.fog_hsv_low, dtype=np.uint8)
+        high = np.array(self.fog_hsv_high, dtype=np.uint8)
+        mask = cv2.inRange(hsv, low, high)
+
+        fog_pixel_count = int(cv2.countNonZero(mask))
+        # Need at least a meaningful chunk of fog on screen to trust the result
+        if fog_pixel_count < 500:
+            return None
+
+        moments = cv2.moments(mask, binaryImage=True)
+        if moments["m00"] == 0:
+            return None
+        fog_cx = moments["m10"] / moments["m00"]
+        fog_cy = moments["m01"] / moments["m00"]
+
+        dx = fog_cx - player_position[0]
+        dy = fog_cy - player_position[1]
+        if math.hypot(dx, dy) < 1:
+            return None
+
+        vlog(f"fog centroid=({int(fog_cx)},{int(fog_cy)}) pixels={fog_pixel_count}")
+        return self.angle_from_direction(dx, dy)
+
+    def showdown_roam(self, player_data, walls):
+        """Roam movement for showdown: move away from the poison fog.
+
+        If fog is visible, head away from its centroid. Otherwise spin in
+        place (rotate the joystick angle each call) to look around without
+        committing to a direction.
+        """
+        player_position = self.get_player_pos(player_data)
+
+        fog_angle = self.detect_fog_direction(self.current_frame, player_position)
+        if fog_angle is not None:
+            desired_angle = self.angle_opposite(fog_angle)
+            vlog(f"roam: fog detected → flee angle={desired_angle:.1f}° (fog at {fog_angle:.1f}°)")
+            return self.find_best_angle(player_position, desired_angle, walls)
+
+        # Nothing to chase, nothing to flee — spin in place
+        self._roam_spin_angle = (getattr(self, "_roam_spin_angle", 0.0) + 30.0) % 360
+        vlog(f"roam: idle spin → angle={self._roam_spin_angle:.1f}°")
+        return self._roam_spin_angle
+
+    def showdown_follow_teammate(self, player_data, teammate_data, walls):
+        """Move towards the closest visible teammate, avoiding walls."""
+        player_pos = self.get_player_pos(player_data)
+
+        # Find the closest detected teammate this frame
+        closest_teammate = None
+        closest_distance = float('inf')
+        for tm in teammate_data:
+            tm_pos = self.get_enemy_pos(tm)
+            dist = self.get_distance(tm_pos, player_pos)
+            if dist < closest_distance:
+                closest_distance = dist
+                closest_teammate = tm_pos
+
+        if closest_teammate is None:
+            self.locked_teammate = None
+            self.locked_teammate_distance = float('inf')
+            return self.showdown_roam(player_data, walls)
+
+        # Hysteresis only applies when there are multiple teammates to choose from.
+        # If we already have a locked target, check whether to switch to a closer one.
+        # Either way, always update the locked target's position to this frame's value.
+        if self.locked_teammate is not None:
+            locked_dist = self.get_distance(self.locked_teammate, player_pos)
+            if closest_distance < locked_dist * (1 - self.teammate_hysteresis):
+                vlog(f"follow teammate: switched target ({int(locked_dist)}px → {int(closest_distance)}px)")
+                self.locked_teammate = closest_teammate
+                self.locked_teammate_distance = closest_distance
+            else:
+                # Same target (or similar) — update its position to the current frame
+                self.locked_teammate = closest_teammate
+                self.locked_teammate_distance = closest_distance
+        else:
+            self.locked_teammate = closest_teammate
+            self.locked_teammate_distance = closest_distance
+
+        direction_x = self.locked_teammate[0] - player_pos[0]
+        direction_y = self.locked_teammate[1] - player_pos[1]
+
+        angle = self.angle_from_direction(direction_x, direction_y)
+        best = self.find_best_angle(player_pos, angle, walls)
+        vlog(f"follow teammate → angle={best:.1f}° (desired={angle:.1f}°, dist={int(closest_distance)}px, "
+             f"player={int(player_pos[0])},{int(player_pos[1])} tm={int(self.locked_teammate[0])},{int(self.locked_teammate[1])})")
+        return best
+
+    def get_showdown_movement(self, player_data, enemy_data, teammate_data, walls, brawler):
+        """Showdown movement using analog joystick angles.
+
+        Always returns a float angle in degrees (0–360).
+        0° = right, 90° = down, 180° = left, 270° = up.
+        """
+        brawler_info = self.brawlers_info.get(brawler)
+        if not brawler_info:
+            raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
+
+        must_brawler_hold_attack = self.must_brawler_hold_attack(brawler, self.brawlers_info)
+        if must_brawler_hold_attack and self.time_since_holding_attack is not None and \
+                time.time() - self.time_since_holding_attack >= brawler_info['hold_attack'] + self.seconds_to_hold_attack_after_reaching_max:
+            self.attack(touch_up=True, touch_down=False)
+            self.time_since_holding_attack = None
+
+        safe_range, attack_range, super_range = self.get_brawler_range(brawler)
+        player_pos = self.get_player_pos(player_data)
+
+        # --- No enemy in sight: follow teammate or roam ---
+        if not self.is_there_enemy(enemy_data):
+            if teammate_data:
+                vlog(f"no enemy → follow teammate ({len(teammate_data)} visible)")
+                return self.showdown_follow_teammate(player_data, teammate_data, walls)
+            vlog("no enemy, no teammate → roam")
+            return self.showdown_roam(player_data, walls)
+
+        enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, walls, "attack")
+        if enemy_coords is None:
+            if teammate_data:
+                vlog("enemy detected but unreachable → follow teammate")
+                return self.showdown_follow_teammate(player_data, teammate_data, walls)
+            vlog("enemy detected but unreachable, no teammate → roam")
+            return self.showdown_roam(player_data, walls)
+
+        # --- Compute exact angle toward/away from enemy, then wall-avoid ---
+        direction_x = enemy_coords[0] - player_pos[0]
+        direction_y = enemy_coords[1] - player_pos[1]
+        toward_angle = self.angle_from_direction(direction_x, direction_y)
+
+        if enemy_distance > safe_range:
+            desired = toward_angle
+            vlog(f"enemy detected → approach desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+        else:
+            desired = self.angle_opposite(toward_angle)
+            vlog(f"enemy too close → retreat desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+
+        angle = self.find_best_angle(player_pos, desired, walls)
+        vlog(f"showdown: movement angle={angle:.1f}° (desired={desired:.1f}°)")
+
+        # --- Skills ---
+        if self.is_super_ready and self.time_since_holding_attack is None:
+            super_type = brawler_info['super_type']
+            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, walls, "super")
+            if (enemy_hittable and
+                    (enemy_distance <= super_range
+                     or super_type in ["spawnable", "other"]
+                     or (brawler in ["stu", "surge"] and super_type == "charge" and enemy_distance <= super_range + attack_range)
+                    )):
+                if self.is_hypercharge_ready:
+                    self.use_hypercharge()
+                    self.time_since_hypercharge_checked = time.time()
+                    self.is_hypercharge_ready = False
+                self.use_super()
+                self.time_since_super_checked = time.time()
+                self.is_super_ready = False
+
+        vlog(f"showdown movement → angle={angle:.1f}°")
+
+        if enemy_distance <= attack_range:
+            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, walls, "attack")
+            vlog(f"enemy in attack range (dist={int(enemy_distance)}px, range={attack_range}px), hittable={enemy_hittable}")
+            if enemy_hittable:
+                if self.should_use_gadget and self.is_gadget_ready and self.time_since_holding_attack is None:
+                    self.use_gadget()
+                    self.time_since_gadget_checked = time.time()
+                    self.is_gadget_ready = False
+
+                if not must_brawler_hold_attack:
+                    self.attack()
+                else:
+                    if self.time_since_holding_attack is None:
+                        self.time_since_holding_attack = time.time()
+                        self.attack(touch_up=False, touch_down=True)
+                    elif time.time() - self.time_since_holding_attack >= self.brawlers_info[brawler]['hold_attack']:
+                        self.attack(touch_up=True, touch_down=False)
+                        self.time_since_holding_attack = None
+        else:
+            vlog(f"enemy out of attack range (dist={int(enemy_distance)}px, range={attack_range}px)")
+
+        return angle
+
     def is_enemy_hittable(self, player_pos, enemy_pos, walls, skill_type):
         if self.can_attack_through_walls(self.current_brawler, skill_type, self.brawlers_info):
             return True
@@ -303,6 +586,43 @@ class Play(Movement):
         new_pos = (player_pos[0] + dx, player_pos[1] + dy)
         return self.walls_block_line_of_sight(player_pos, new_pos, walls)
 
+    def is_path_blocked_angle(self, player_pos, angle_degrees, walls, distance=None):
+        """Check if the path in the given angle direction is blocked by walls.
+
+        Uses two probe distances (half-tile and full-tile) so that walls that
+        start very close to the player are also detected.
+        """
+        if distance is None:
+            distance = self.TILE_SIZE * self.window_controller.scale_factor
+        angle_rad = math.radians(angle_degrees)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        # Check both close (half-tile) and far (full-tile) points
+        for d in (distance * 0.5, distance):
+            new_pos = (player_pos[0] + cos_a * d, player_pos[1] + sin_a * d)
+            if self.walls_block_line_of_sight(player_pos, new_pos, walls):
+                return True
+        return False
+
+    def find_best_angle(self, player_pos, desired_angle, walls, sweep_range=160, step=10):
+        """Find the closest unblocked angle to desired_angle within ±sweep_range degrees.
+
+        Sweeps outward from the desired angle in alternating left/right steps so
+        the first hit is always the least deviation from the goal direction.
+        Returns desired_angle unchanged if no walls (or no clear path found).
+        """
+        if not self.is_path_blocked_angle(player_pos, desired_angle, walls):
+            return desired_angle
+
+        for offset in range(step, sweep_range + 1, step):
+            for sign in (1, -1):
+                candidate = (desired_angle + sign * offset) % 360
+                if not self.is_path_blocked_angle(player_pos, candidate, walls):
+                    return candidate
+
+        # Nothing clear found — return desired anyway (better than stopping)
+        return desired_angle
+
     @staticmethod
     def validate_game_data(data):
         incomplete = False
@@ -311,6 +631,9 @@ class Play(Movement):
 
         if "enemy" not in data.keys():
             data['enemy'] = None
+
+        if "teammate" not in data.keys():
+            data['teammate'] = None
 
         if 'wall' not in data.keys() or not data['wall']:
             data['wall'] = []
@@ -321,39 +644,79 @@ class Play(Movement):
         if not data:
             data = {
                 "enemy": None,
-                "player": None
+                "player": None,
+                "teammate": None,
             }
         for key in self.time_since_detections:
             if key in data and data[key]:
                 self.time_since_detections[key] = time.time()
 
     def do_movement(self, movement):
-        movement = movement.lower()
-        keys_to_keyDown = []
-        keys_to_keyUp = []
-        for key in ['w', 'a', 's', 'd']:
-            if key in movement:
-                keys_to_keyDown.append(key)
-            else:
-                keys_to_keyUp.append(key)
+        if isinstance(movement, float):
+            # Analog joystick path: movement is an angle in degrees
+            self.window_controller.move_joystick_angle(movement)
+            self.keys_hold = []
+        else:
+            # Legacy WASD path
+            movement = movement.lower()
+            keys_to_keyDown = []
+            keys_to_keyUp = []
+            for key in ['w', 'a', 's', 'd']:
+                if key in movement:
+                    keys_to_keyDown.append(key)
+                else:
+                    keys_to_keyUp.append(key)
 
-        if keys_to_keyDown:
-            self.window_controller.keys_down(keys_to_keyDown)
+            if keys_to_keyDown:
+                self.window_controller.keys_down(keys_to_keyDown)
 
-        self.window_controller.keys_up(keys_to_keyUp)
+            self.window_controller.keys_up(keys_to_keyUp)
 
-        self.keys_hold = keys_to_keyDown
+            self.keys_hold = keys_to_keyDown
 
     def get_brawler_range(self, brawler):
         if self.brawler_ranges is None:
             self.brawler_ranges = self.load_brawler_ranges(self.brawlers_info)
         return self.brawler_ranges[brawler]
 
+    def _debounce_angle(self, angle: float, threshold_deg: float = 10.0) -> float:
+        """Suppress small angle changes to avoid jitter.
+
+        Only adopts the new angle if it differs by more than threshold_deg
+        from the last committed angle, OR if no angle was committed yet.
+        """
+        if self.last_movement is None or not isinstance(self.last_movement, float):
+            self.last_movement = angle
+            self.last_movement_time = time.time()
+            return angle
+
+        diff = abs((angle - self.last_movement + 180) % 360 - 180)
+        if diff > threshold_deg:
+            self.last_movement = angle
+            self.last_movement_time = time.time()
+
+        return self.last_movement
+
     def loop(self, brawler, data, current_time):
-        movement = self.get_movement(player_data=data['player'][0], enemy_data=data['enemy'], walls=data['wall'], brawler=brawler)
+        if self.is_showdown:
+            movement = self.get_showdown_movement(
+                player_data=data['player'][0],
+                enemy_data=data['enemy'],
+                teammate_data=data['teammate'],
+                walls=data['wall'],
+                brawler=brawler,
+            )
+            # Debounce small angle jitter before sending to joystick
+            movement = self._debounce_angle(movement)
+        else:
+            movement = self.get_movement(player_data=data['player'][0], enemy_data=data['enemy'], walls=data['wall'], brawler=brawler)
+
         current_time = time.time()
         if current_time - self.time_since_movement > self.minimum_movement_delay:
-            movement = self.unstuck_movement_if_needed(movement, current_time)
+            if isinstance(movement, float):
+                movement = self.unstuck_angle_if_needed(movement, current_time)
+            else:
+                movement = self.unstuck_movement_if_needed(movement, current_time)
             self.do_movement(movement)
             self.time_since_movement = time.time()
         return movement
@@ -578,7 +941,11 @@ class Play(Movement):
             self.is_super_ready = self.check_if_super_ready(frame)
             self.time_since_super_checked = current_time
 
+        self.current_frame = frame
         movement = self.loop(brawler, data, current_time)
+
+        if visual_debug:
+            self.show_visual_debug(frame, data)
 
         # if data:
         #     # Record scene data
@@ -589,6 +956,52 @@ class Play(Movement):
         #         'wall': data.get('wall', []),
         #         'movement': movement,
         #     })
+
+    def show_visual_debug(self, frame, data):
+        import numpy as np
+        img = frame.copy() if isinstance(frame, np.ndarray) else np.array(frame)
+
+        # --- Fog mask overlay (magenta tint on detected fog pixels) ---
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        low = np.array(self.fog_hsv_low, dtype=np.uint8)
+        high = np.array(self.fog_hsv_high, dtype=np.uint8)
+        fog_mask = cv2.inRange(hsv, low, high)
+        if cv2.countNonZero(fog_mask) > 0:
+            tint = np.zeros_like(img)
+            tint[:, :] = (255, 0, 255)  # magenta in RGB
+            img = np.where(fog_mask[..., None] > 0,
+                           cv2.addWeighted(img, 0.5, tint, 0.5, 0),
+                           img)
+            # Draw fog centroid and arrow from player to it
+            moments = cv2.moments(fog_mask, binaryImage=True)
+            if moments["m00"] > 0 and data.get("player"):
+                fog_cx = int(moments["m10"] / moments["m00"])
+                fog_cy = int(moments["m01"] / moments["m00"])
+                cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
+                cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                px, py = self.get_player_pos(data["player"][0])
+                cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
+                                (255, 0, 255), 2, tipLength=0.15)
+
+        colors = {
+            "player":   (0, 255, 0),
+            "enemy":    (0, 0, 255),
+            "teammate": (0, 165, 255),
+            "wall":     (128, 128, 128),
+        }
+        for key, color in colors.items():
+            boxes = data.get(key)
+            if not boxes:
+                continue
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(img, key, (x1, max(y1 - 6, 0)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        cv2.imshow("Pyla Visual Debug", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        cv2.waitKey(1)
 
     @staticmethod
     def movement_to_direction(movement):

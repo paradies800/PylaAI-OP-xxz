@@ -43,20 +43,37 @@ class WindowController:
         # --- 2. ADB & Scrcpy Connection ---
         print("Connecting to ADB...")
         try:
-            # Connect to device (adbutils automatically handles port detection mostly)
-            # but adbutils is usually smarter at finding the open device.
-            device_list = adb.device_list()
-            if not device_list:
-                # Try connecting to common ports if empty
-                for port in [load_toml_as_dict("cfg/general_config.toml")["emulator_port"], 5555, 16384, 5635] + list(range(5565, 5756, 10)):
+            def list_online_devices():
+                devices = []
+                for dev in adb.device_list():
                     try:
-                         adb.connect(f"127.0.0.1:{port}")
+                        state = dev.get_state()
                     except Exception:
-                         pass
-                device_list = adb.device_list()
+                        state = "unknown"
+                    if state == "device":
+                        devices.append(dev)
+                    else:
+                        print(f"Skipping ADB device {dev.serial} (state: {state})")
+                return devices
+
+            device_list = list_online_devices()
+            if not device_list:
+                # Try connecting to common ports if none are online yet.
+                # Note: 5037 is the ADB server port — never try to connect to
+                # it as if it were a device.
+                configured_port = load_toml_as_dict("cfg/general_config.toml")["emulator_port"]
+                candidate_ports = [configured_port, 5555, 16384, 5635] + list(range(5565, 5756, 10))
+                for port in candidate_ports:
+                    if port == 5037:
+                        continue
+                    try:
+                        adb.connect(f"127.0.0.1:{port}")
+                    except Exception:
+                        pass
+                device_list = list_online_devices()
 
             if not device_list:
-                 raise ConnectionError("No ADB devices found.")
+                raise ConnectionError("No online ADB devices found.")
 
             self.device = device_list[0]
             print(f"Connected to device: {self.device.serial}")
@@ -152,13 +169,36 @@ class WindowController:
     def touch_up(self, x, y, pointer_id=0):
         self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_UP, pointer_id)
 
+    def move_joystick_angle(self, angle_degrees: float, radius: float = 150.0):
+        """Move the joystick in an exact direction given by angle_degrees.
+
+        0° = right, 90° = down, 180° = left, 270° = up (screen coordinates).
+        radius controls how far from center the touch point is placed.
+        """
+        angle_rad = math.radians(angle_degrees)
+        scaled_radius = radius * self.scale_factor
+        target_x = self.joystick_x + math.cos(angle_rad) * scaled_radius
+        target_y = self.joystick_y + math.sin(angle_rad) * scaled_radius
+
+        if not self.are_we_moving:
+            self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = True
+            self.last_joystick_pos = (target_x, target_y)
+            self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
+        elif self.last_joystick_pos != (target_x, target_y):
+            self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
+            self.last_joystick_pos = (target_x, target_y)
+
+    def stop_joystick(self):
+        """Release the joystick touch."""
+        if self.are_we_moving:
+            self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = False
+            self.last_joystick_pos = (None, None)
+
     def keys_up(self, keys: List[str]):
         if "".join(keys).lower() == "wasd":
-            if self.are_we_moving:
-                # Use PID_JOYSTICK so we don't lift the attack finger
-                self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
-                self.are_we_moving = False
-                self.last_joystick_pos = (None, None)
+            self.stop_joystick()
 
     def keys_down(self, keys: List[str]):
 
