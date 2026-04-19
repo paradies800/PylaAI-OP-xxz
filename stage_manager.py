@@ -61,7 +61,8 @@ class StageManager:
         self.last_recorded_result_time = 0.0
         self.last_recorded_result = None
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
-        self.play_again_on_win = load_toml_as_dict("./cfg/bot_config.toml")["play_again_on_win"] == "yes"
+        time_thresholds = load_toml_as_dict("./cfg/time_tresholds.toml")
+        self.end_screen_dismiss_delay = float(time_thresholds.get("end_screen_dismiss_delay", 0.35))
         self.window_controller = window_controller
         self.states = {
             'shop': self.quit_shop,
@@ -247,33 +248,13 @@ class StageManager:
             # end-of-match screens give way. One press is rarely enough in
             # showdown: after the place screen there can be star drops,
             # trophy rewards, and offers to dismiss.
-            if self.play_again_on_win and found_game_result in ("victory", "1st", "2nd"):
-                self.window_controller.press_key("F")
-            else:
-                self.window_controller.press_key("Q")
+            self.window_controller.press_key("Q")
             button_pressed = True
 
-            time.sleep(1.0)
+            time.sleep(self.end_screen_dismiss_delay)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot)
-        
-        if self.play_again_on_win and found_game_result in ("victory", "1st", "2nd"):
-            print("Waiting for match to start...")
-            start_wait_time = time.time()
-            while time.time() - start_wait_time < 25:
-                screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
-                if current_state == "match":
-                    print("Match started successfully!")
-                    return
-                time.sleep(0.5)
-            
-            print("Match did not start within 25s, pressing Q to return to lobby.")
-            self.window_controller.press_key("Q")
-            time.sleep(2)
-            print("Pressing Q again")
-            self.window_controller.press_key("Q")
-        
+
         print("Game has ended", current_state)
 
     def quit_shop(self):
@@ -292,4 +273,3 @@ class StageManager:
             self.states[state](data)
             return
         self.states[state]()
-

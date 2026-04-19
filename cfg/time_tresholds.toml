@@ -1,4 +1,4 @@
-state_check = 5
+state_check = 1.0
 no_detections = 10
 game_start = 0
 idle = 5
@@ -8,3 +8,4 @@ super = 0.3
 wall_detection = 0.2
 no_detection_proceed = 6.5
 check_if_brawl_stars_crashed = 10
+end_screen_dismiss_delay = 0.35
