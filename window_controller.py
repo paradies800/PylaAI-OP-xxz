@@ -92,6 +92,14 @@ class WindowController:
                         print(f"Skipping ADB device {dev.serial} (state: {state})")
                 return devices
 
+            def prefer_selected_devices(devices, selected_emulator, configured_port):
+                preferred_ports = set(_unique_ports([configured_port] + EMULATOR_PORTS.get(selected_emulator, [])))
+                preferred_serials = {f"127.0.0.1:{port}" for port in preferred_ports}
+                return [
+                    dev for dev in devices
+                    if _serial_port(dev.serial) in preferred_ports or dev.serial in preferred_serials
+                ]
+
             general_config = load_toml_as_dict("cfg/general_config.toml")
             selected_emulator = general_config.get("current_emulator", "Others")
             configured_port = general_config.get("emulator_port", 0)
@@ -102,7 +110,10 @@ class WindowController:
                 + list(range(5565, 5756, 10))
             )
 
-            if candidate_ports:
+            device_list = list_online_devices()
+            preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
+
+            if not preferred_devices and not device_list:
                 # Try connecting to common ports if none are online yet.
                 # Note: 5037 is the ADB server port — never try to connect to
                 # it as if it were a device.
@@ -112,17 +123,11 @@ class WindowController:
                     except Exception:
                         pass
                 device_list = list_online_devices()
+                preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
 
             if not device_list:
                 tried_ports = ", ".join(str(port) for port in candidate_ports)
                 raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
-
-            preferred_ports = set(_unique_ports([configured_port] + EMULATOR_PORTS.get(selected_emulator, [])))
-            preferred_serials = {f"127.0.0.1:{port}" for port in preferred_ports}
-            preferred_devices = [
-                dev for dev in device_list
-                if _serial_port(dev.serial) in preferred_ports or dev.serial in preferred_serials
-            ]
 
             self.device = preferred_devices[0] if preferred_devices else device_list[0]
             if selected_emulator != "Others" and not preferred_devices:
