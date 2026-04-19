@@ -6,7 +6,14 @@ import customtkinter as ctk
 import pyautogui
 from PIL import Image
 from customtkinter import CTkImage
-from utils import load_toml_as_dict, save_brawler_icon, get_dpi_scale, save_dict_as_toml
+from utils import (
+    fetch_brawl_stars_player,
+    load_toml_as_dict,
+    normalize_brawler_name,
+    save_brawler_icon,
+    get_dpi_scale,
+    save_dict_as_toml,
+)
 from tkinter import filedialog
 
 orig_screen_width, orig_screen_height = 1920, 1080
@@ -49,6 +56,8 @@ class SelectBrawler:
         self.images = []
         self.brawlers_data = []
         self.farm_type = ""
+        self.api_trophies_by_brawler = None
+        self.api_trophy_error_reported = False
 
         for brawler in self.brawlers:
             img_path = f"./api/assets/brawler_icons/{brawler}.png"
@@ -134,6 +143,34 @@ class SelectBrawler:
             except Exception as e:
                 print(f"Error loading brawler data: {e}")
 
+    def get_api_trophies_by_brawler(self):
+        if self.api_trophies_by_brawler is not None:
+            return self.api_trophies_by_brawler
+
+        config_path = "cfg/brawl_stars_api.toml"
+        try:
+            api_config = load_toml_as_dict(config_path)
+            player_data = fetch_brawl_stars_player(
+                api_config.get("api_token", "").strip(),
+                api_config.get("player_tag", "").strip(),
+                int(api_config.get("timeout_seconds", 15)),
+            )
+            known_by_normalized_name = {
+                normalize_brawler_name(brawler): brawler
+                for brawler in self.brawlers
+            }
+            self.api_trophies_by_brawler = {}
+            for api_brawler in player_data.get("brawlers", []):
+                brawler = known_by_normalized_name.get(normalize_brawler_name(api_brawler.get("name", "")))
+                if brawler:
+                    self.api_trophies_by_brawler[brawler] = int(api_brawler.get("trophies", 0))
+        except Exception as e:
+            self.api_trophies_by_brawler = {}
+            if not self.api_trophy_error_reported:
+                print(f"Could not auto-fill trophies. Check {config_path}: {e}")
+                self.api_trophy_error_reported = True
+        return self.api_trophies_by_brawler
+
     def on_image_click(self, brawler):
         self.open_brawler_entry(brawler)
 
@@ -153,6 +190,9 @@ class SelectBrawler:
         wins_var = tk.StringVar()
         current_win_streak_var = tk.StringVar(value="0")
         auto_pick_var = tk.BooleanVar(value=True) if self.brawlers_data else tk.BooleanVar(value=False)
+        api_trophies = self.get_api_trophies_by_brawler()
+        if brawler in api_trophies:
+            trophies_var.set(str(api_trophies[brawler]))
 
         # --- Fixed Y positions for placed widgets ---
         y_title = int(7 * scale_factor)

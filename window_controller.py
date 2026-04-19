@@ -31,6 +31,42 @@ directions_xy_deltas_dict = {
 
 BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml")["brawl_stars_package"]
 
+EMULATOR_PORTS = {
+    "BlueStacks": [5555, 5556, 5557, 5565],
+    "LDPlayer": [5555, 5557, 5559, 5554],
+    "MEmu": [21503, 21513, 21523, 5555],
+    "MuMu": [16384, 16416, 16448, 7555, 5558, 5555],
+    "Others": [5555, 5558, 7555, 16384, 16416, 16448, 21503, 5635],
+}
+
+
+def _unique_ports(ports):
+    unique = []
+    for port in ports:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port == 5037:
+            continue
+        if port not in unique:
+            unique.append(port)
+    return unique
+
+
+def _serial_port(serial):
+    if serial.startswith("emulator-"):
+        try:
+            return int(serial.rsplit("-", 1)[1])
+        except ValueError:
+            return None
+    if ":" in serial:
+        try:
+            return int(serial.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+    return None
+
 
 class WindowController:
     def __init__(self):
@@ -56,16 +92,21 @@ class WindowController:
                         print(f"Skipping ADB device {dev.serial} (state: {state})")
                 return devices
 
-            device_list = list_online_devices()
-            if not device_list:
+            general_config = load_toml_as_dict("cfg/general_config.toml")
+            selected_emulator = general_config.get("current_emulator", "Others")
+            configured_port = general_config.get("emulator_port", 0)
+            candidate_ports = _unique_ports(
+                [configured_port]
+                + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"])
+                + EMULATOR_PORTS["Others"]
+                + list(range(5565, 5756, 10))
+            )
+
+            if candidate_ports:
                 # Try connecting to common ports if none are online yet.
                 # Note: 5037 is the ADB server port — never try to connect to
                 # it as if it were a device.
-                configured_port = load_toml_as_dict("cfg/general_config.toml")["emulator_port"]
-                candidate_ports = [configured_port, 5555, 16384, 5635] + list(range(5565, 5756, 10))
                 for port in candidate_ports:
-                    if port == 5037:
-                        continue
                     try:
                         adb.connect(f"127.0.0.1:{port}")
                     except Exception:
@@ -73,10 +114,23 @@ class WindowController:
                 device_list = list_online_devices()
 
             if not device_list:
-                raise ConnectionError("No online ADB devices found.")
+                tried_ports = ", ".join(str(port) for port in candidate_ports)
+                raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
 
-            self.device = device_list[0]
-            print(f"Connected to device: {self.device.serial}")
+            preferred_ports = set(_unique_ports([configured_port] + EMULATOR_PORTS.get(selected_emulator, [])))
+            preferred_serials = {f"127.0.0.1:{port}" for port in preferred_ports}
+            preferred_devices = [
+                dev for dev in device_list
+                if _serial_port(dev.serial) in preferred_ports or dev.serial in preferred_serials
+            ]
+
+            self.device = preferred_devices[0] if preferred_devices else device_list[0]
+            if selected_emulator != "Others" and not preferred_devices:
+                print(
+                    f"Could not identify a {selected_emulator} device by port; "
+                    f"using first online ADB device instead."
+                )
+            print(f"Connected to {selected_emulator}: {self.device.serial}")
 
             self.frame_lock = threading.Lock()
             self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)

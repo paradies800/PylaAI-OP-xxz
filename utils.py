@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import re
 from io import BytesIO
 import ctypes
 import json
@@ -77,6 +78,34 @@ def save_brawler_data(data):
     with open("latest_brawler_data.json", 'w') as f:
         json.dump(data, f, indent=4)
 
+
+def normalize_brawler_name(name):
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
+    cleaned_tag = str(player_tag).strip().upper()
+    if not api_token:
+        raise ValueError("Missing api_token in cfg/brawl_stars_api.toml")
+    if not cleaned_tag or cleaned_tag == "#YOURTAG":
+        raise ValueError("Missing player_tag in cfg/brawl_stars_api.toml")
+    if not cleaned_tag.startswith("#"):
+        cleaned_tag = f"#{cleaned_tag}"
+
+    encoded_tag = cleaned_tag.replace("#", "%23")
+    response = requests.get(
+        f"https://api.brawlstars.com/v1/players/{encoded_tag}",
+        headers={"Authorization": f"Bearer {api_token}"},
+        timeout=timeout,
+    )
+    if response.status_code == 200:
+        return response.json()
+    try:
+        error_payload = response.json()
+        reason = error_payload.get("reason") or error_payload.get("message") or response.text
+    except ValueError:
+        reason = response.text
+    raise RuntimeError(f"Brawl Stars API error {response.status_code}: {reason}")
 
 
 def find_template_center(main_img, template, threshold=0.8):

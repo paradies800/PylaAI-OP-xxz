@@ -1,0 +1,7 @@
+# Fill this file to import current brawler trophies from the official Brawl Stars API.
+# Create an API token at https://developer.brawlstars.com/ and allow your current public IP.
+
+api_token = ""
+player_tag = "#YOURTAG"
+
+timeout_seconds = 15

@@ -79,6 +79,7 @@ class Hub:
         self.general_config.setdefault("long_press_star_drop", "no")
         self.general_config.setdefault("trophies_multiplier", 1.0)
         self.general_config.setdefault("current_emulator", "LDPlayer")
+        self.general_config.setdefault("emulator_port", 5555)
 
         # -----------------------------------------------------------------------------------------
         # Appearance
@@ -446,6 +447,14 @@ class Hub:
 
         self.emu_var = tk.StringVar(value=self.general_config["current_emulator"])  # default
 
+        emulator_ports = {
+            "BlueStacks": 5555,
+            "LDPlayer": 5555,
+            "MEmu": 21503,
+            "MuMu": 16384,
+            "Others": 5555,
+        }
+
         def handle_emulator_choice(choice):
             self.emu_var.set(choice)
             if choice == "BlueStacks":
@@ -454,8 +463,11 @@ class Hub:
                 self.general_config["current_emulator"] = "LDPlayer"
             elif choice == "MEmu":
                 self.general_config["current_emulator"] = "MEmu"
+            elif choice == "MuMu":
+                self.general_config["current_emulator"] = "MuMu"
             else:
                 self.general_config["current_emulator"] = "Others"
+            self.general_config["emulator_port"] = emulator_ports[self.general_config["current_emulator"]]
             save_dict_as_toml(self.general_config, self.general_config_path)
             refresh_emu_buttons()
 
@@ -477,12 +489,14 @@ class Hub:
         self.btn_ldplayer = create_emu_button(self.emulator_frame, "LDPlayer")
         self.btn_bluestacks = create_emu_button(self.emulator_frame, "BlueStacks")
         self.btn_memu = create_emu_button(self.emulator_frame, "MEmu")
+        self.btn_mumu = create_emu_button(self.emulator_frame, "MuMu")
         self.btn_others = create_emu_button(self.emulator_frame, "Others")
 
         self.btn_ldplayer.grid(row=0, column=0, padx=S(10), pady=S(5))
         self.btn_bluestacks.grid(row=0, column=1, padx=S(10), pady=S(5))
         self.btn_memu.grid(row=0, column=2, padx=S(10), pady=S(5))
-        self.btn_others.grid(row=0, column=3, padx=S(10), pady=S(5))
+        self.btn_mumu.grid(row=0, column=3, padx=S(10), pady=S(5))
+        self.btn_others.grid(row=0, column=4, padx=S(10), pady=S(5))
 
         def refresh_emu_buttons():
             curr_emu = self.emu_var.get()
@@ -496,6 +510,7 @@ class Hub:
             color(self.btn_ldplayer, "LDPlayer")
             color(self.btn_bluestacks, "BlueStacks")
             color(self.btn_memu, "MEmu")
+            color(self.btn_mumu, "MuMu")
             color(self.btn_others, "Others")
 
         refresh_emu_buttons()
@@ -1025,4 +1040,3 @@ class Hub:
 
         if callable(self.on_close_callback):
             self.on_close_callback()
-
