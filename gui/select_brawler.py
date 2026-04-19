@@ -1,9 +1,11 @@
 import json
+import time
 import tkinter as tk
 from math import ceil
 
 import customtkinter as ctk
 import pyautogui
+from adbutils import adb
 from PIL import Image
 from customtkinter import CTkImage
 from utils import (
@@ -93,7 +95,7 @@ class SelectBrawler:
                       font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
                       border_width=int(2 * scale_factor)).place(x=int(390 * scale_factor), y=int((necessary_height-60* scale_factor) ))
 
-        ctk.CTkButton(self.app, text="Load Brawler Config", command=self.load_brawler_config, fg_color=self.colors['ui box gray'],
+        ctk.CTkButton(self.app, text="Push All 1k", command=self.push_all_1k, fg_color=self.colors['ui box gray'],
                       text_color="white",
                       font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
                       border_width=int(2 * scale_factor)).place(x=int(10 * scale_factor),
@@ -143,6 +145,106 @@ class SelectBrawler:
                         print("Invalid data format. Expected a list of brawler data.", e)
             except Exception as e:
                 print(f"Error loading brawler data: {e}")
+
+    def get_push_all_1k_data(self):
+        api_config = load_brawl_stars_api_config("cfg/brawl_stars_api.toml")
+        player_data = fetch_brawl_stars_player(
+            api_config.get("api_token", "").strip(),
+            api_config.get("player_tag", "").strip(),
+            int(api_config.get("timeout_seconds", 15)),
+        )
+        known_by_normalized_name = {
+            normalize_brawler_name(brawler): brawler
+            for brawler in self.brawlers
+        }
+        rows = []
+        for index, api_brawler in enumerate(player_data.get("brawlers", [])):
+            brawler = known_by_normalized_name.get(normalize_brawler_name(api_brawler.get("name", "")))
+            if not brawler:
+                continue
+            trophies = int(api_brawler.get("trophies", 0))
+            if trophies < 1000:
+                rows.append((trophies, index, brawler))
+
+        rows.sort(key=lambda item: (item[0], item[1]))
+        data = []
+        for idx, (trophies, _, brawler) in enumerate(rows):
+            data.append({
+                "brawler": brawler,
+                "push_until": 1000,
+                "trophies": trophies,
+                "wins": 0,
+                "type": "trophies",
+                "automatically_pick": idx != 0,
+                "win_streak": 0,
+            })
+        return data
+
+    def get_adb_device_for_quick_select(self):
+        general_config = load_toml_as_dict("cfg/general_config.toml")
+        configured_port = general_config.get("emulator_port", 0)
+        preferred_ports = [configured_port, 16384, 16416, 16448, 7555, 5558, 5555]
+
+        def serial_port(serial):
+            if serial.startswith("emulator-"):
+                try:
+                    return int(serial.rsplit("-", 1)[1])
+                except ValueError:
+                    return None
+            if ":" in serial:
+                try:
+                    return int(serial.rsplit(":", 1)[1])
+                except ValueError:
+                    return None
+            return None
+
+        devices = adb.device_list()
+        for dev in devices:
+            if serial_port(dev.serial) in preferred_ports:
+                return dev
+
+        for port in preferred_ports:
+            if port == 5037:
+                continue
+            try:
+                adb.connect(f"127.0.0.1:{port}")
+            except Exception:
+                pass
+
+        devices = adb.device_list()
+        if not devices:
+            raise ConnectionError("No ADB device found for Push All 1k.")
+        return devices[0]
+
+    def quick_select_least_trophies_brawler(self):
+        device = self.get_adb_device_for_quick_select()
+        size = device.window_size()
+        wr = size.width / 1920
+        hr = size.height / 1080
+
+        def tap(x, y, wait=0.8):
+            device.shell(f"input tap {int(x * wr)} {int(y * hr)}")
+            time.sleep(wait)
+
+        print(f"Push All 1k using ADB device: {device.serial}")
+        tap(128, 500, 1.4)   # left Brawlers button in lobby
+        tap(1210, 45, 0.6)   # sort dropdown
+        tap(1210, 426, 1.0)  # Least Trophies
+        tap(422, 359, 1.0)   # first brawler card
+        tap(260, 991, 1.0)   # Select
+
+    def push_all_1k(self):
+        try:
+            data = self.get_push_all_1k_data()
+            if not data:
+                print("Push All 1k: no brawlers below 1000 trophies were found.")
+                return
+            print("Push All 1k first brawler:", data[0])
+            self.quick_select_least_trophies_brawler()
+            self.brawlers_data = data
+            self.start_bot()
+        except Exception as e:
+            print(f"Push All 1k failed: {e}")
 
     def get_api_trophies_by_brawler(self):
         if self.api_trophies_by_brawler is not None:
