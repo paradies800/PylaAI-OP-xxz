@@ -8,6 +8,7 @@ from PIL import Image
 from customtkinter import CTkImage
 from utils import (
     fetch_brawl_stars_player,
+    load_brawl_stars_api_config,
     load_toml_as_dict,
     normalize_brawler_name,
     save_brawler_icon,
@@ -149,7 +150,7 @@ class SelectBrawler:
 
         config_path = "cfg/brawl_stars_api.toml"
         try:
-            api_config = load_toml_as_dict(config_path)
+            api_config = load_brawl_stars_api_config(config_path)
             player_data = fetch_brawl_stars_player(
                 api_config.get("api_token", "").strip(),
                 api_config.get("player_tag", "").strip(),

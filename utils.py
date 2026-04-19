@@ -108,6 +108,36 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
     raise RuntimeError(f"Brawl Stars API error {response.status_code}: {reason}")
 
 
+def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
+    try:
+        return load_toml_as_dict(file_path)
+    except Exception:
+        pass
+
+    if not os.path.exists(file_path):
+        return {}
+
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        text = f.read()
+
+    config = {}
+    token_match = re.search(r'api_token\s*=\s*"(.*?)"', text, re.DOTALL)
+    if token_match:
+        config["api_token"] = "".join(token_match.group(1).split())
+
+    tag_match = re.search(r'player_tag\s*=\s*"([^"]*)"', text)
+    if tag_match:
+        config["player_tag"] = tag_match.group(1).strip()
+
+    timeout_match = re.search(r"timeout_seconds\s*=\s*(\d+)", text)
+    if timeout_match:
+        config["timeout_seconds"] = int(timeout_match.group(1))
+    else:
+        config["timeout_seconds"] = 15
+
+    return config
+
+
 def find_template_center(main_img, template, threshold=0.8):
 
     main_image_cv = cv2.cvtColor(main_img, cv2.COLOR_RGB2GRAY)
