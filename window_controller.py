@@ -138,21 +138,12 @@ class WindowController:
             print(f"Connected to {selected_emulator}: {self.device.serial}")
 
             self.frame_lock = threading.Lock()
-            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
+            self.scrcpy_client = None
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 15.0
-
-            def on_frame(frame):
-                if frame is not None:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    with self.frame_lock:
-                        self.last_frame = frame
-                        self.last_frame_time = time.time()
-
-            self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
-            self.scrcpy_client.start(threaded=True)
+            self.start_scrcpy_client()
             atexit.register(self.close)
             print("Scrcpy client started successfully.")
 
@@ -163,6 +154,41 @@ class WindowController:
         self.PID_ATTACK = 2  # ID for clicks/attacks
         self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
         self.time_since_checked_if_brawl_stars_crashed = time.time()
+
+    def start_scrcpy_client(self):
+        def on_frame(frame):
+            if frame is not None:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                with self.frame_lock:
+                    self.last_frame = frame
+                    self.last_frame_time = time.time()
+
+        with self.frame_lock:
+            self.last_frame = None
+            self.last_frame_time = 0.0
+
+        self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
+        self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+        self.scrcpy_client.start(threaded=True)
+
+    def restart_scrcpy_client(self):
+        print("Restarting scrcpy client...")
+        old_client = self.scrcpy_client
+        if old_client is not None:
+            def stop_old_client():
+                try:
+                    old_client.stop()
+                except Exception as e:
+                    print(f"Could not stop old scrcpy client cleanly: {e}")
+
+            stop_thread = threading.Thread(target=stop_old_client, daemon=True)
+            stop_thread.start()
+            stop_thread.join(timeout=2)
+            if stop_thread.is_alive():
+                print("Old scrcpy client did not stop within 2s; starting a new client anyway.")
+        time.sleep(1)
+        self.start_scrcpy_client()
+        print("Scrcpy client restarted successfully.")
 
     def get_latest_frame(self):
         with self.frame_lock:

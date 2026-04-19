@@ -11,7 +11,7 @@ from play import Play
 from stage_manager import StageManager
 from state_finder import get_state
 from time_management import TimeManagement
-from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url
+from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, extract_text_strings
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
     update_wall_model_classes, get_latest_wall_model_file, get_latest_version, cprint
 from window_controller import WindowController
@@ -46,6 +46,9 @@ def pyla_main(data):
             self.in_cooldown = False
             self.cooldown_start_time = 0
             self.cooldown_duration = 3 * 60
+            self.last_stale_feed_recovery = 0.0
+            self.last_disconnect_check = 0.0
+            self.disconnect_reload_attempts = 0
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -81,6 +84,9 @@ def pyla_main(data):
                 sys.exit(1)
 
         def manage_time_tasks(self, frame):
+            if self.handle_disconnect_screen(frame):
+                return
+
             if self.Time_management.state_check():
                 state = get_state(frame)
                 self.state = state
@@ -98,6 +104,39 @@ def pyla_main(data):
             if self.Time_management.idle_check():
                 #print("check for idle!")
                 self.lobby_automator.check_for_idle(frame)
+
+        def handle_disconnect_screen(self, frame):
+            if time.time() - self.last_disconnect_check < 3:
+                return False
+            self.last_disconnect_check = time.time()
+
+            h, w = frame.shape[:2]
+            center_crop = frame[int(h * 0.22):int(h * 0.50), int(w * 0.15):int(w * 0.65)]
+            try:
+                text = " ".join(extract_text_strings(center_crop))
+            except Exception as e:
+                print(f"Could not OCR disconnect screen: {e}")
+                return False
+
+            if (
+                    "reload" not in text
+                    and "disconnect" not in text
+                    and "disconnected" not in text
+                    and "idle" not in text
+            ):
+                return False
+
+            self.disconnect_reload_attempts += 1
+            self.window_controller.keys_up(list("wasd"))
+            print(f"Disconnect/reload screen detected, recovery attempt {self.disconnect_reload_attempts}.")
+            if self.disconnect_reload_attempts >= 3:
+                print("Reload did not clear disconnect screen; restarting Brawl Stars.")
+                self.window_controller.restart_brawl_stars()
+                self.disconnect_reload_attempts = 0
+            else:
+                self.window_controller.click(550, 450, already_include_ratio=False)
+                time.sleep(3)
+            return True
 
         def main(self): #this is for timer to stop after time
             s_time = time.time()
@@ -130,8 +169,13 @@ def pyla_main(data):
                 _, last_ft = self.window_controller.get_latest_frame()
                 if last_ft > 0 and (time.time() - last_ft) > self.window_controller.FRAME_STALE_TIMEOUT:
                     self.Play.window_controller.keys_up(list("wasd"))
-                    print("Stale frame detected -- restarting the game.")
-                    self.window_controller.restart_brawl_stars()
+                    if time.time() - self.last_stale_feed_recovery > 30:
+                        print("Stale scrcpy frame detected -- restarting scrcpy feed.")
+                        self.last_stale_feed_recovery = time.time()
+                        self.window_controller.restart_scrcpy_client()
+                    else:
+                        print("Stale frame detected, waiting for scrcpy recovery cooldown.")
+                    continue
 
                 self.manage_time_tasks(frame)
 

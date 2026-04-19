@@ -36,6 +36,10 @@ def extract_text_and_positions(image_path):
 
     return text_details
 
+
+def extract_text_strings(image_input):
+    return [str(result[1]).lower() for result in reader.readtext(image_input)]
+
 class DefaultEasyOCR:
     def __init__(self):
         self.reader = easyocr.Reader(['en'])
