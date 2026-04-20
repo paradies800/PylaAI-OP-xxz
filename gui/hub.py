@@ -1117,6 +1117,14 @@ class Hub:
             except tk.TclError:
                 pass
 
+        try:
+            for after_id in self.app.tk.call("after", "info"):
+                try:
+                    self.app.after_cancel(after_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try: self.app.destroy()
         except Exception: pass
         os.dup2(saved_out, fd_out); os.dup2(saved_err, fd_err)

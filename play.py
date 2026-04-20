@@ -404,6 +404,18 @@ class Play(Movement):
         self._fog_mask_cache_value = None
         self._fog_mask_cache_origin = None
 
+    def reset_match_control_state(self):
+        self.window_controller.keys_up(list("wasd"))
+        self.keys_hold = []
+        self.last_movement = None
+        self.last_movement_time = time.time()
+        self.time_since_movement = 0
+        self.time_since_different_movement = time.time()
+        self.time_since_player_last_found = time.time()
+        self.time_since_last_proceeding = time.time()
+        self.fix_movement_keys['toggled'] = False
+        self.time_since_holding_attack = None
+
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
             brawlers_info = load_brawlers_info()

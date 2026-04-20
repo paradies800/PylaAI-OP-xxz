@@ -122,7 +122,25 @@ class SelectBrawler:
 
     def start_bot(self):
         self.data_setter(self.brawlers_data)
-        self.app.destroy()
+        self.close_app()
+
+    def close_app(self):
+        try:
+            for after_id in self.app.tk.call("after", "info"):
+                try:
+                    self.app.after_cancel(after_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.app.quit()
+        except Exception:
+            pass
+        try:
+            self.app.destroy()
+        except Exception:
+            pass
 
     def load_brawler_config(self):
         # open file select dialog to select a json file
@@ -234,10 +252,16 @@ class SelectBrawler:
         tap(260, 991, 1.0)   # Select
 
     def push_all_1k(self):
+        hidden_for_start = False
         try:
+            self.app.withdraw()
+            self.app.update_idletasks()
+            hidden_for_start = True
+
             data = self.get_push_all_1k_data()
             if not data:
                 print("Push All 1k: no brawlers below 1000 trophies were found.")
+                self.app.deiconify()
                 return
             print("Push All 1k first brawler:", data[0])
             self.quick_select_least_trophies_brawler()
@@ -245,6 +269,11 @@ class SelectBrawler:
             self.start_bot()
         except Exception as e:
             print(f"Push All 1k failed: {e}")
+            if hidden_for_start:
+                try:
+                    self.app.deiconify()
+                except Exception:
+                    pass
 
     def get_api_trophies_by_brawler(self):
         if self.api_trophies_by_brawler is not None:

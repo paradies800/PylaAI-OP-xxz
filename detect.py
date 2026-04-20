@@ -33,13 +33,16 @@ def get_optimal_threads(max_limit=4):
 
 
 optimal_threads_amount = get_optimal_threads()
+_provider_message_printed = False
 
 
 def _build_providers(preferred_device):
+    global _provider_message_printed
+    preferred_device = str(preferred_device or "auto").strip().lower()
     available_providers = set(ort.get_available_providers())
     providers = []
 
-    if preferred_device in ("gpu", "auto"):
+    if preferred_device in ("gpu", "auto", "cuda"):
         if "CUDAExecutionProvider" in available_providers:
             providers.append((
                 "CUDAExecutionProvider",
@@ -47,16 +50,27 @@ def _build_providers(preferred_device):
                     "cudnn_conv_algo_search": "DEFAULT",
                 },
             ))
-            print("Using CUDA GPU")
-        elif "DmlExecutionProvider" in available_providers:
+
+    if preferred_device in ("gpu", "auto", "directml", "dml"):
+        if "DmlExecutionProvider" in available_providers and not providers:
             providers.append("DmlExecutionProvider")
-            print("Using GPU")
-        elif "AzureExecutionProvider" in available_providers:
+
+    if preferred_device in ("gpu", "auto", "openvino"):
+        if "OpenVINOExecutionProvider" in available_providers and not providers:
+            providers.append("OpenVINOExecutionProvider")
+
+    if preferred_device in ("gpu", "auto"):
+        if "AzureExecutionProvider" in available_providers and not providers:
             providers.append("AzureExecutionProvider")
 
     providers.append("CPUExecutionProvider")
-    if providers[0] == "CPUExecutionProvider":
-        print("Using CPU as no GPU provider found")
+    if not _provider_message_printed:
+        selected = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        if selected == "CPUExecutionProvider":
+            print(f"Using CPU inference. Available ONNX providers: {', '.join(ort.get_available_providers())}")
+        else:
+            print(f"Using {selected} for ONNX inference with CPU fallback.")
+        _provider_message_printed = True
     return providers
 
 
@@ -163,10 +177,15 @@ class Detect:
     def load_model(self):
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        so.intra_op_num_threads = optimal_threads_amount
-        so.inter_op_num_threads = optimal_threads_amount
         so.add_session_config_entry("session.intra_op.allow_spinning", "0")
         providers = _build_providers(self.preferred_device)
+        first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        if first_provider == "CPUExecutionProvider":
+            so.intra_op_num_threads = optimal_threads_amount
+            so.inter_op_num_threads = max(1, min(2, optimal_threads_amount))
+        else:
+            so.intra_op_num_threads = 1
+            so.inter_op_num_threads = 1
         model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
         return model, model.get_providers()[0]
 

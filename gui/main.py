@@ -1,10 +1,35 @@
 import os
 import sys
+import gc
+import tkinter as tk
 
 import utils
 from utils import api_base_url
 
 sys.path.append(os.path.abspath('../'))
+
+
+def patch_tk_cleanup_errors():
+    if getattr(tk.Variable, "_pyla_safe_del", False):
+        return
+
+    original_del = tk.Variable.__del__
+
+    def safe_del(self):
+        try:
+            original_del(self)
+        except (RuntimeError, tk.TclError) as e:
+            message = str(e)
+            if (
+                    "main thread is not in main loop" in message
+                    or "application has been destroyed" in message
+                    or "invalid command name" in message
+            ):
+                return
+            raise
+
+    tk.Variable.__del__ = safe_del
+    tk.Variable._pyla_safe_del = True
 
 
 class App:
@@ -25,6 +50,7 @@ class App:
         self.brawler_data = value
 
     def start(self, pyla_version, get_latest_version):
+        patch_tk_cleanup_errors()
         self.login(self.set_is_logged)
         if self.logged_in:
             if api_base_url == "localhost":
@@ -32,7 +58,7 @@ class App:
             else:
                 self.hub_menu(pyla_version, get_latest_version())
             self.select_brawler(self.set_data, self.brawlers)
+            gc.collect()
             if self.brawler_data:
                 utils.save_brawler_data(self.brawler_data)
                 self.pyla_main(self.brawler_data)
-

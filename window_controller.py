@@ -161,6 +161,7 @@ class WindowController:
             self.frame_id = 0
             self.last_stale_warning_time = 0.0
             self.last_joystick_pos = (None, None)
+            self.last_joystick_down_time = 0.0
             self.FRAME_STALE_TIMEOUT = 15.0
             self.start_scrcpy_client()
             atexit.register(self.close)
@@ -188,6 +189,9 @@ class WindowController:
             self.last_frame_time = 0.0
             self.frame_id = 0
             self.last_stale_warning_time = 0.0
+        self.are_we_moving = False
+        self.last_joystick_pos = (None, None)
+        self.last_joystick_down_time = 0.0
 
         client_kwargs = {"device": self.device, "max_width": 0}
         if self.scrcpy_max_fps:
@@ -297,9 +301,14 @@ class WindowController:
         target_x = self.joystick_x + math.cos(angle_rad) * scaled_radius
         target_y = self.joystick_y + math.sin(angle_rad) * scaled_radius
 
+        joystick_needs_refresh = time.time() - self.last_joystick_down_time > 2.0
+        if self.are_we_moving and joystick_needs_refresh:
+            self.stop_joystick()
+
         if not self.are_we_moving:
             self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
             self.are_we_moving = True
+            self.last_joystick_down_time = time.time()
             self.last_joystick_pos = (target_x, target_y)
             self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
         elif self.last_joystick_pos != (target_x, target_y):
@@ -309,8 +318,12 @@ class WindowController:
     def stop_joystick(self):
         """Release the joystick touch."""
         if self.are_we_moving:
-            self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            try:
+                self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            except Exception as e:
+                print(f"Could not release joystick cleanly: {e}")
             self.are_we_moving = False
+            self.last_joystick_down_time = 0.0
             self.last_joystick_pos = (None, None)
 
     def keys_up(self, keys: List[str]):
@@ -326,9 +339,14 @@ class WindowController:
                 delta_x += dx
                 delta_y += dy
 
+        joystick_needs_refresh = time.time() - self.last_joystick_down_time > 2.0
+        if self.are_we_moving and joystick_needs_refresh:
+            self.stop_joystick()
+
         if not self.are_we_moving:
             self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
             self.are_we_moving = True
+            self.last_joystick_down_time = time.time()
             self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
 
         if self.last_joystick_pos != (self.joystick_x + delta_x, self.joystick_y + delta_y):

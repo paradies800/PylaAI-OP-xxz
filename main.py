@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import cv2
+
 from logger_setup import setup_logging_if_enabled
 
 setup_logging_if_enabled()
@@ -75,6 +77,8 @@ def pyla_main(data):
             self.last_disconnect_check = 0.0
             self.disconnect_reload_attempts = 0
             self.last_processed_frame_id = -1
+            self.ips_ema = None
+            self.disconnect_ocr_interval = 6.0
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -115,9 +119,14 @@ def pyla_main(data):
 
             if self.Time_management.state_check():
                 state = get_state(frame)
+                previous_state = self.state
                 self.state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
+                if previous_state == "match" and state != "match":
+                    self.Play.reset_match_control_state()
+                elif previous_state != "match" and state == "match":
+                    self.Play.reset_match_control_state()
                 frame_data = None
                 self.Stage_manager.do_state(state, frame_data)
 
@@ -132,12 +141,20 @@ def pyla_main(data):
                 self.lobby_automator.check_for_idle(frame)
 
         def handle_disconnect_screen(self, frame):
-            if time.time() - self.last_disconnect_check < 3:
+            if time.time() - self.last_disconnect_check < self.disconnect_ocr_interval:
                 return False
             self.last_disconnect_check = time.time()
 
             h, w = frame.shape[:2]
-            center_crop = frame[int(h * 0.22):int(h * 0.50), int(w * 0.15):int(w * 0.65)]
+            dialog_crop = frame[int(h * 0.32):int(h * 0.62), int(w * 0.24):int(w * 0.76)]
+            dialog_mean = float(dialog_crop.mean())
+            dialog_std = float(dialog_crop.std())
+            dialog_hsv = cv2.cvtColor(dialog_crop, cv2.COLOR_RGB2HSV)
+            dialog_saturation = float(dialog_hsv[:, :, 1].mean())
+            if dialog_mean > 90 or dialog_std > 75 or dialog_saturation > 85:
+                return False
+
+            center_crop = frame[int(h * 0.22):int(h * 0.55), int(w * 0.15):int(w * 0.70)]
             try:
                 text = " ".join(extract_text_strings(center_crop))
             except Exception as e:
@@ -211,7 +228,9 @@ def pyla_main(data):
                 if abs(s_time - time.time()) > 1:
                     elapsed = time.time() - s_time
                     if elapsed > 0 and not self.visual_debug:
-                        print(f"{c / elapsed:.2f} IPS")
+                        current_ips = c / elapsed
+                        self.ips_ema = current_ips if self.ips_ema is None else (self.ips_ema * 0.75 + current_ips * 0.25)
+                        print(f"{self.ips_ema:.2f} IPS")
                     s_time = time.time()
                     c = 0
 
