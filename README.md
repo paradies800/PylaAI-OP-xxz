@@ -7,7 +7,7 @@ This repository is intended for devs and it's recommended for others to use the 
 
 How to run :
 - Install Python and Git. This project was tested with Python 3.11.
-- Install an Android emulator. MuMu Player is supported by this fork; LDPlayer, BlueStacks, MEmu, and other ADB emulators may also work.
+- Install an Android emulator with ADB support. MuMu Player, LDPlayer, BlueStacks, MEmu, and other ADB emulators may work.
 - Clone this fork:
   `git clone https://github.com/paradies800/PylaAI-OP.git`
 - Open the project folder:
@@ -18,7 +18,7 @@ How to run :
 - Set the emulator resolution to 1920x1080 for best results.
 - Run the bot:
   `python main.py`
-- In the hub, choose your emulator. For MuMu Player, select `MuMu`.
+- In the hub, choose the emulator you are using.
 - Select your brawler setup, then press Start.
 
 Brawl Stars API trophy autofill :
@@ -32,7 +32,7 @@ Brawl Stars API trophy autofill :
 
 Push All 1k :
 - Fill `cfg/brawl_stars_api.toml` first.
-- Start MuMu/Brawl Stars and leave the game on the lobby screen.
+- Start your emulator, open Brawl Stars, and leave the game on the lobby screen.
 - Run `python main.py`.
 - In the brawler selection window, press `Push All 1k`.
 - The bot will sort the in-game brawler menu by Least Trophies, select the lowest trophy brawler, and build a queue for all known brawlers under 1000 trophies.
