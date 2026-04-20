@@ -156,7 +156,7 @@ def setup_pyla():
     print("\n Finalizing and Repairing Conflicts...")
     force_install(["numpy<2.0.0"], no_deps=True)
     force_install(["adbutils==2.12.0", "av==12.3.0"])
-    force_install(["git+https://github.com/leng-yue/py-scrcpy-client.git@v0.5.0"], no_deps=True)
+    force_install(["https://github.com/leng-yue/py-scrcpy-client/archive/refs/tags/v0.5.0.zip"], no_deps=True)
 
     # the setup completes
     os.system('cls')
