@@ -32,6 +32,16 @@ def force_install(reqs, no_deps=False):
     if no_deps: cmd += ["--force-reinstall", "--no-deps"]
     subprocess.check_call(cmd + reqs)
 
+def remove_onnxruntime_variants():
+    subprocess.run([
+        sys.executable, "-m", "pip", "uninstall", "-y",
+        "onnxruntime", "onnxruntime-gpu", "onnxruntime-directml", "onnxruntime-openvino"
+    ], check=False)
+
+def install_onnxruntime_variant(req):
+    remove_onnxruntime_variants()
+    force_install([req])
+
 def get_gpu_data():
     """Detects exact NVIDIA/AMD/Intel architecture for Windows."""
     # NVIDIA cards Check
@@ -46,8 +56,8 @@ def get_gpu_data():
     # AMD/Intel cards Check
     try:
         wmic = subprocess.check_output(["wmic", "path", "win32_VideoController", "get", "name"], encoding='utf-8')
-        if "Intel" in wmic: return "intel", 0.0, "Intel HD/Arc Graphics"
         if "AMD" in wmic or "Radeon" in wmic: return "amd_windows", 0.0, "AMD Radeon"
+        if "Intel" in wmic: return "intel", 0.0, "Intel HD/Arc Graphics"
     except: pass
 
     return "cpu", 0.0, "Generic CPU"
@@ -67,8 +77,8 @@ def setup_pyla():
     print("Installing Core Dependencies...")
     base_reqs = [
         "customtkinter>=5.2.0", "toml>=0.10.2", "Pillow>=10.0.0", "discord.py>=2.3.2",
-        "opencv-python==4.8.0.76", "requests", "ultralytics", "aiohttp", "easyocr", 
-        "google-play-scraper"
+        "opencv-python==4.8.0.76", "requests", "ultralytics", "aiohttp", "easyocr",
+        "google-play-scraper", "pyautogui>=0.9.54", "packaging>=23.0"
     ]
     force_install(base_reqs)
 
@@ -95,15 +105,25 @@ def setup_pyla():
                 status_accel = "CUDA 12.1 (Standard)"
             
             force_install(torch_cmd)
-            force_install(["onnxruntime-gpu"])
+            install_onnxruntime_variant("onnxruntime-gpu")
             onnx_installed = True
             status_pytorch = "CUDA Edition"
+        elif ask_user("Install DirectML GPU acceleration instead? (smaller, works on most Windows GPUs)"):
+            install_onnxruntime_variant("onnxruntime-directml")
+            onnx_installed = True
+            status_pytorch = "DirectML Edition"
+            status_accel = "DirectML"
 
     # INTEL BRANCH (OpenVINO)
     elif target == "intel":
         print(f"\n Intel: {name} detected.")
-        if ask_user("Install Intel OpenVINO acceleration? (best for Intel Arc/Integrated GPUs)"):
-            force_install(["onnxruntime-openvino"])
+        if ask_user("Install DirectML GPU acceleration? (recommended for most Windows Intel GPUs)"):
+            install_onnxruntime_variant("onnxruntime-directml")
+            onnx_installed = True
+            status_pytorch = "DirectML Edition"
+            status_accel = "DirectML"
+        elif ask_user("Install Intel OpenVINO acceleration instead?"):
+            install_onnxruntime_variant("onnxruntime-openvino")
             onnx_installed = True
             status_pytorch = "OpenVINO Edition"
             status_accel = "OpenVINO"
@@ -112,15 +132,21 @@ def setup_pyla():
     elif "amd" in target:
         print(f"\n AMD: {name} detected.")
         if ask_user("Install AMD DirectML acceleration?"):
-            force_install(["onnxruntime-directml"])
+            install_onnxruntime_variant("onnxruntime-directml")
             onnx_installed = True
             status_pytorch = "DirectML Edition"
             status_accel = "DirectML"
 
+    elif ask_user("Install DirectML GPU acceleration? (works on many Windows GPUs)"):
+        install_onnxruntime_variant("onnxruntime-directml")
+        onnx_installed = True
+        status_pytorch = "DirectML Edition"
+        status_accel = "DirectML"
+
     # FALLBACK BRANCH (If user skipped acceleration or has a generic CPU)
     if not onnx_installed:
         print("\n Installing standard CPU ONNX Runtime...")
-        force_install(["onnxruntime"])
+        install_onnxruntime_variant("onnxruntime")
         status_accel = "Standard CPU"
 
     # some conflict fixes
