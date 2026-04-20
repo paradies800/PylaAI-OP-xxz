@@ -18,6 +18,7 @@ end_results_path = r"./images/end_results/"
 
 region_data = load_toml_as_dict("./cfg/lobby_config.toml")['template_matching']
 super_debug = load_toml_as_dict("./cfg/general_config.toml")['super_debug'] == "yes"
+_last_printed_state = None
 if super_debug:
     debug_folder = "./debug_frames/"
     if not os.path.exists(debug_folder):
@@ -157,10 +158,12 @@ def is_in_star_drop(image):
     return False
 
 def get_state(screenshot):
+    global _last_printed_state
     screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
     if super_debug: cv2.imwrite(f"./debug_frames/state_screenshot_{len(os.listdir('./debug_frames'))}.png", screenshot_bgr)
     state = get_in_game_state(screenshot_bgr)
-    print(f"State: {state}")
+    if super_debug or state != _last_printed_state:
+        print(f"State: {state}")
+        _last_printed_state = state
     return state
-
 

@@ -1,139 +1,229 @@
 import os
+import warnings
 
 import cv2
 import numpy as np
-import torch
 import onnxruntime as ort
-from ultralytics.utils.nms import non_max_suppression
+
 from utils import load_toml_as_dict
-import warnings
 
 warnings.filterwarnings(
     "ignore",
     message=".*'pin_memory' argument is set as true but no accelerator is found.*",
-    category=UserWarning
+    category=UserWarning,
 )
 
-debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
+debug = load_toml_as_dict("cfg/general_config.toml")["super_debug"] == "yes"
+
 
 def get_optimal_threads(max_limit=4):
-    threads = os.cpu_count()
+    configured_threads = load_toml_as_dict("cfg/general_config.toml").get("onnx_cpu_threads", "auto")
+    if str(configured_threads).strip().lower() != "auto":
+        try:
+            threads_amount = max(1, int(configured_threads))
+            print(f"Using configured ONNX CPU threads: {threads_amount}.")
+            return threads_amount
+        except (TypeError, ValueError):
+            pass
+
+    threads = os.cpu_count() or 2
     threads_amount = min(max(2, threads // 2), max_limit)
-    if True: print(f"Detected {threads} CPU threads, using {threads_amount} threads.")
+    print(f"Detected {threads} CPU threads, using {threads_amount} threads.")
     return threads_amount
 
+
 optimal_threads_amount = get_optimal_threads()
-torch.set_num_threads(optimal_threads_amount)
+
+
+def _build_providers(preferred_device):
+    available_providers = set(ort.get_available_providers())
+    providers = []
+
+    if preferred_device in ("gpu", "auto"):
+        if "CUDAExecutionProvider" in available_providers:
+            providers.append((
+                "CUDAExecutionProvider",
+                {
+                    "cudnn_conv_algo_search": "DEFAULT",
+                },
+            ))
+            print("Using CUDA GPU")
+        elif "DmlExecutionProvider" in available_providers:
+            providers.append("DmlExecutionProvider")
+            print("Using GPU")
+        elif "AzureExecutionProvider" in available_providers:
+            providers.append("AzureExecutionProvider")
+
+    providers.append("CPUExecutionProvider")
+    if providers[0] == "CPUExecutionProvider":
+        print("Using CPU as no GPU provider found")
+    return providers
+
+
+def _numpy_nms(boxes, scores, iou_threshold=0.6):
+    if len(boxes) == 0:
+        return np.array([], dtype=np.int32)
+
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = scores.argsort()[::-1]
+    keep = []
+
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+        order = order[np.where(iou <= iou_threshold)[0] + 1]
+
+    return np.array(keep, dtype=np.int32)
+
+
+def _postprocess_raw(raw_output, conf_thresh=0.6, iou_thresh=0.6):
+    prediction = raw_output[0]
+
+    if prediction.ndim == 3:
+        prediction = prediction[0]
+        if prediction.shape[0] < prediction.shape[1]:
+            prediction = prediction.T
+
+    if prediction.shape[1] <= 6:
+        boxes_xyxy = prediction[:, :4]
+        confidences = prediction[:, 4]
+        class_ids = prediction[:, 5].astype(np.int32)
+    else:
+        boxes_cxcywh = prediction[:, :4]
+        class_scores = prediction[:, 4:]
+        class_ids = np.argmax(class_scores, axis=1)
+        confidences = class_scores[np.arange(prediction.shape[0]), class_ids]
+
+        x1 = boxes_cxcywh[:, 0] - boxes_cxcywh[:, 2] / 2
+        y1 = boxes_cxcywh[:, 1] - boxes_cxcywh[:, 3] / 2
+        x2 = boxes_cxcywh[:, 0] + boxes_cxcywh[:, 2] / 2
+        y2 = boxes_cxcywh[:, 1] + boxes_cxcywh[:, 3] / 2
+        boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
+
+    mask = confidences >= conf_thresh
+    if not np.any(mask):
+        return []
+
+    boxes_xyxy = boxes_xyxy[mask]
+    confidences = confidences[mask]
+    class_ids = class_ids[mask]
+
+    results = []
+    for class_id in np.unique(class_ids):
+        class_mask = class_ids == class_id
+        class_boxes = boxes_xyxy[class_mask]
+        class_scores = confidences[class_mask]
+        keep = _numpy_nms(class_boxes, class_scores, iou_thresh)
+        if len(keep) == 0:
+            continue
+
+        kept_boxes = class_boxes[keep]
+        kept_scores = class_scores[keep]
+        kept_classes = np.full((len(keep), 1), class_id, dtype=np.float32)
+        results.append(np.hstack([kept_boxes, kept_scores.reshape(-1, 1), kept_classes]))
+
+    return results
+
 
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
-        self.preferred_device = load_toml_as_dict("cfg/general_config.toml")['cpu_or_gpu']
+        self.preferred_device = load_toml_as_dict("cfg/general_config.toml")["cpu_or_gpu"]
         self.model_path = model_path
         self.classes = classes
-        self.ignore_classes = ignore_classes if ignore_classes else []
+        self.ignore_classes = set(ignore_classes) if ignore_classes else set()
         self.input_size = input_size
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
         self.model, self.device = self.load_model()
+        self.input_name = self.model.get_inputs()[0].name
+        self.output_names = [output.name for output in self.model.get_outputs()]
         self._padded_img_buffer = np.full(
             (1, 3, self.input_size[0], self.input_size[1]),
             128.0 / 255.0,
-            dtype=np.float32
+            dtype=np.float32,
         )
-
+        self._last_resized_w = 0
+        self._last_resized_h = 0
 
     def load_model(self):
-        available_providers = ort.get_available_providers()
-        if self.preferred_device == "gpu" or self.preferred_device == "auto":
-            if "CUDAExecutionProvider" in available_providers:
-                onnx_provider = "CUDAExecutionProvider"
-                print("Using CUDA GPU")
-            elif "DmlExecutionProvider" in available_providers:
-                onnx_provider = "DmlExecutionProvider"
-                print("Using GPU")
-            elif "AzureExecutionProvider" in available_providers:
-                onnx_provider = "AzureExecutionProvider"
-            else:
-                print("Using CPU as no GPU provider found")
-                onnx_provider = "CPUExecutionProvider"
-
-        else:
-            onnx_provider = "CPUExecutionProvider"
-
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         so.intra_op_num_threads = optimal_threads_amount
         so.inter_op_num_threads = optimal_threads_amount
-        model = ort.InferenceSession(self.model_path, sess_options=so, providers=[onnx_provider])
-
-        return model, onnx_provider
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        providers = _build_providers(self.preferred_device)
+        model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
+        return model, model.get_providers()[0]
 
     def preprocess_image(self, img):
-        h, w, _ = img.shape
+        h, w = img.shape[:2]
         scale = min(self.input_size[0] / h, self.input_size[1] / w)
         new_w = int(w * scale)
         new_h = int(h * scale)
 
-        resized_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        if new_w != self._last_resized_w or new_h != self._last_resized_h:
+            self._padded_img_buffer[:] = 128.0 / 255.0
+            self._last_resized_w = new_w
+            self._last_resized_h = new_h
 
-        self._padded_img_buffer[0, :, :new_h, :new_w] = np.transpose(resized_img, (2, 0, 1)).astype(np.float32) / 255.0
+        resized_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        img_float = resized_img.astype(np.float32, copy=True)
+        np.multiply(img_float, 1.0 / 255.0, out=img_float)
+
+        self._padded_img_buffer[0, 0, :new_h, :new_w] = img_float[:, :, 0]
+        self._padded_img_buffer[0, 1, :new_h, :new_w] = img_float[:, :, 1]
+        self._padded_img_buffer[0, 2, :new_h, :new_w] = img_float[:, :, 2]
 
         return self._padded_img_buffer, new_w, new_h
 
-    def postprocess(self, preds, img, orig_img_shape, resized_shape, conf_tresh=0.6):
-        # Apply Non-Maximum Suppression (NMS)
-
-        preds = non_max_suppression(
-            preds,
-            conf_thres=conf_tresh,
-            iou_thres=0.6,
-            classes=None,
-            agnostic=False,
-        )
+    def postprocess(self, raw_output, orig_img_shape, resized_shape, conf_tresh=0.6):
+        detections = _postprocess_raw(raw_output, conf_thresh=conf_tresh, iou_thresh=0.6)
 
         orig_h, orig_w = orig_img_shape
         resized_w, resized_h = resized_shape
-
-        # Calculate the scaling factor and padding
         scale_w = orig_w / resized_w
         scale_h = orig_h / resized_h
 
         results = []
-        for pred in preds:
-            if len(pred):
-                pred[:, 0] *= scale_w  # x1
-                pred[:, 1] *= scale_h  # y1
-                pred[:, 2] *= scale_w  # x2
-                pred[:, 3] *= scale_h  # y2
-                results.append(pred.cpu().numpy())
-
+        for detection in detections:
+            if len(detection):
+                detection[:, 0] *= scale_w
+                detection[:, 1] *= scale_h
+                detection[:, 2] *= scale_w
+                detection[:, 3] *= scale_h
+                results.append(detection)
         return results
 
     def detect_objects(self, img, conf_tresh=0.6):
         orig_h, orig_w = img.shape[:2]
-        orig_img_shape = (orig_h, orig_w)
-
-        # Preprocess the image
         preprocessed_img, resized_w, resized_h = self.preprocess_image(img)
-        resized_shape = (resized_w, resized_h)
-
-        # Run inference
-        outputs = self.model.run(None, {'images': preprocessed_img})
-
-        # Postprocess the outputs
-        detections = self.postprocess(torch.from_numpy(outputs[0]), preprocessed_img, orig_img_shape, resized_shape, conf_tresh)
+        outputs = self.model.run(self.output_names, {self.input_name: preprocessed_img})
+        detections = self.postprocess(outputs, (orig_h, orig_w), (resized_w, resized_h), conf_tresh)
 
         results = {}
         for detection in detections:
-            for *xyxy, conf, cls in detection:
-                x1, y1, x2, y2 = map(int, xyxy)
-                class_id = int(cls)
+            for row in detection:
+                x1, y1, x2, y2 = int(row[0]), int(row[1]), int(row[2]), int(row[3])
+                class_id = int(row[5])
                 class_name = self.classes[class_id]
 
                 if class_id in self.ignore_classes or class_name in self.ignore_classes:
                     continue
-                if class_name not in results:
-                    results[class_name] = []
-                results[class_name].append([x1, y1, x2, y2])
+                results.setdefault(class_name, []).append([x1, y1, x2, y2])
 
         return results
-
-

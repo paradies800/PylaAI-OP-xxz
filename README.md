@@ -29,6 +29,13 @@ Brawl Stars API trophy autofill :
   `api_token = "YOUR_API_TOKEN"`
   `player_tag = "#YOURTAG"`
 - When you click a brawler in the brawler selection window, the Current Trophies field is filled from the API automatically.
+- If your public IP changes often, enable auto-refresh in `cfg/brawl_stars_api.toml`:
+  `auto_refresh_token = true`
+  `developer_email = "YOUR_DEVELOPER_EMAIL"`
+  `developer_password = "YOUR_DEVELOPER_PASSWORD"`
+- Auto-refresh logs in to the official developer portal, detects the current public IP, deletes old PylaAI-created keys, creates a fresh key for that IP, and saves it as `api_token`.
+- Keep `delete_all_tokens = false` unless you really want every key on the developer account deleted.
+- Do not share a filled `cfg/brawl_stars_api.toml`; the committed file should keep tokens, email, and password blank.
 
 Push All 1k :
 - Fill `cfg/brawl_stars_api.toml` first.

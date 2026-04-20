@@ -74,6 +74,8 @@ class Hub:
 
         # General config defaults
         self.general_config.setdefault("max_ips", "auto")
+        self.general_config.setdefault("scrcpy_max_fps", 15)
+        self.general_config.setdefault("onnx_cpu_threads", "auto")
         self.general_config.setdefault("super_debug", "yes")
         self.general_config.setdefault("cpu_or_gpu", "auto")
         self.general_config.setdefault("long_press_star_drop", "no")
@@ -790,6 +792,22 @@ class Hub:
             convert_func=lambda s: s if s.lower() == "auto" else int(s),
             use_general_config=True,
             tooltip_text="Maximum Images per second the bot processes. 'auto' means no limit."
+        )
+
+        create_labeled_entry(
+            label_text="Scrcpy Max FPS:",
+            config_key="scrcpy_max_fps",
+            convert_func=int,
+            use_general_config=True,
+            tooltip_text="Maximum emulator video frames per second captured by scrcpy."
+        )
+
+        create_labeled_entry(
+            label_text="ONNX CPU Threads:",
+            config_key="onnx_cpu_threads",
+            convert_func=lambda s: s if s.lower() == "auto" else int(s),
+            use_general_config=True,
+            tooltip_text="CPU threads used by the detection models. Lower values reduce CPU usage."
         )
 
         container.grid_columnconfigure(0, weight=1)

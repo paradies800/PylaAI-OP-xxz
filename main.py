@@ -36,9 +36,17 @@ def pyla_main(data):
             self.initialize_stage_manager()
             self.state = None
             try:
-                self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
+                general_config = load_toml_as_dict("cfg/general_config.toml")
+                self.max_ips = int(general_config['max_ips'])
             except ValueError:
                 self.max_ips = None
+                general_config = load_toml_as_dict("cfg/general_config.toml")
+            print(
+                "Performance config:",
+                f"max_ips={self.max_ips or 'auto'}",
+                f"scrcpy_max_fps={general_config.get('scrcpy_max_fps', 'default')}",
+                f"onnx_cpu_threads={general_config.get('onnx_cpu_threads', 'auto')}",
+            )
             self.visual_debug = load_toml_as_dict("cfg/general_config.toml").get('visual_debug', 'no') == "yes"
             self.run_for_minutes = int(load_toml_as_dict("cfg/general_config.toml")['run_for_minutes'])
             self.start_time = time.time()
@@ -49,6 +57,7 @@ def pyla_main(data):
             self.last_stale_feed_recovery = 0.0
             self.last_disconnect_check = 0.0
             self.disconnect_reload_attempts = 0
+            self.last_processed_frame_id = -1
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -176,6 +185,12 @@ def pyla_main(data):
                     else:
                         print("Stale frame detected, waiting for scrcpy recovery cooldown.")
                     continue
+
+                frame_id = self.window_controller.get_latest_frame_id()
+                if frame_id == self.last_processed_frame_id:
+                    time.sleep(0.01)
+                    continue
+                self.last_processed_frame_id = frame_id
 
                 self.manage_time_tasks(frame)
 

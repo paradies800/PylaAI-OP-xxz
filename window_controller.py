@@ -103,6 +103,9 @@ class WindowController:
             general_config = load_toml_as_dict("cfg/general_config.toml")
             selected_emulator = general_config.get("current_emulator", "Others")
             configured_port = general_config.get("emulator_port", 0)
+            self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 15))
+            if self.scrcpy_max_fps <= 0:
+                self.scrcpy_max_fps = None
             candidate_ports = _unique_ports(
                 [configured_port]
                 + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"])
@@ -141,6 +144,7 @@ class WindowController:
             self.scrcpy_client = None
             self.last_frame = None
             self.last_frame_time = 0.0
+            self.frame_id = 0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 15.0
             self.start_scrcpy_client()
@@ -162,12 +166,17 @@ class WindowController:
                 with self.frame_lock:
                     self.last_frame = frame
                     self.last_frame_time = time.time()
+                    self.frame_id += 1
 
         with self.frame_lock:
             self.last_frame = None
             self.last_frame_time = 0.0
+            self.frame_id = 0
 
-        self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
+        client_kwargs = {"device": self.device, "max_width": 0}
+        if self.scrcpy_max_fps:
+            client_kwargs["max_fps"] = self.scrcpy_max_fps
+        self.scrcpy_client = scrcpy.Client(**client_kwargs)
         self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
         self.scrcpy_client.start(threaded=True)
 
@@ -195,6 +204,10 @@ class WindowController:
             if self.last_frame is None:
                 return None, 0.0
             return self.last_frame, self.last_frame_time
+
+    def get_latest_frame_id(self):
+        with self.frame_lock:
+            return self.frame_id
 
     def restart_brawl_stars(self):
         self.device.app_stop(BRAWL_STARS_PACKAGE)
@@ -303,7 +316,7 @@ class WindowController:
             self.touch_move(self.joystick_x + delta_x, self.joystick_y + delta_y, pointer_id=self.PID_JOYSTICK)
             self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
 
-    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True, touch_up=True, touch_down=True):
+    def click(self, x: int, y: int, delay=0.005, already_include_ratio=True, touch_up=True, touch_down=True):
         if not already_include_ratio:
             x = x * self.width_ratio
             y = y * self.height_ratio
@@ -312,7 +325,7 @@ class WindowController:
         time.sleep(delay)
         if touch_up: self.touch_up(x, y, pointer_id=self.PID_ATTACK)
 
-    def press_key(self, key, delay=0.05, touch_up=True, touch_down=True):
+    def press_key(self, key, delay=0.005, touch_up=True, touch_down=True):
         if key not in key_coords_dict:
             return
         x, y = key_coords_dict[key]

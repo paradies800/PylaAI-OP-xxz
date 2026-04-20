@@ -1,4 +1,4 @@
-state_check = 1.0
+state_check = 1.5
 no_detections = 10
 game_start = 0
 idle = 5
