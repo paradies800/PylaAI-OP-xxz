@@ -59,6 +59,8 @@ class Movement:
         self.wall_stuck_shift_threshold = float(bot_config.get("wall_stuck_shift_threshold", 3.0))
         self.wall_stuck_timeout = float(bot_config.get("wall_stuck_timeout", 3.0))
         self.wall_stuck_min_walls = int(bot_config.get("wall_stuck_min_walls", 3))
+        self.wall_path_padding = float(bot_config.get("wall_path_padding", 28))
+        self.wall_path_probe_tiles = float(bot_config.get("wall_path_probe_tiles", 1.5))
         self.wall_stuck_state = {
             "last_sample_time": 0.0,
             "last_wall_centers": None,   # np.ndarray (N, 2) of filtered wall centers
@@ -444,7 +446,7 @@ class Play(Movement):
         return brawlers_info[brawler]['hold_attack'] > 0
 
     @staticmethod
-    def walls_block_line_of_sight(p1, p2, walls):
+    def walls_block_line_of_sight(p1, p2, walls, padding=0):
         if not walls:
             return False
 
@@ -452,8 +454,13 @@ class Play(Movement):
         p2_t = (int(p2[0]), int(p2[1]))
         min_x, max_x = min(p1_t[0], p2_t[0]), max(p1_t[0], p2_t[0])
         min_y, max_y = min(p1_t[1], p2_t[1]), max(p1_t[1], p2_t[1])
+        padding = int(max(0, padding))
         for wall in walls:
             x1, y1, x2, y2 = wall
+            x1 -= padding
+            y1 -= padding
+            x2 += padding
+            y2 += padding
 
             if max_x < x1 or min_x > x2 or max_y < y1 or min_y > y2:
                 continue
@@ -801,7 +808,7 @@ class Play(Movement):
         if 'd' in move_direction.lower():
             dx += distance
         new_pos = (player_pos[0] + dx, player_pos[1] + dy)
-        return self.walls_block_line_of_sight(player_pos, new_pos, walls)
+        return self.walls_block_line_of_sight(player_pos, new_pos, walls, padding=self.wall_path_padding)
 
     def is_path_blocked_angle(self, player_pos, angle_degrees, walls, distance=None):
         """Check if the path in the given angle direction is blocked by walls.
@@ -814,10 +821,11 @@ class Play(Movement):
         angle_rad = math.radians(angle_degrees)
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
-        # Check both close (half-tile) and far (full-tile) points
-        for d in (distance * 0.5, distance):
+        max_probe = max(1.0, self.wall_path_probe_tiles)
+        probes = (distance * 0.5, distance, distance * max_probe)
+        for d in probes:
             new_pos = (player_pos[0] + cos_a * d, player_pos[1] + sin_a * d)
-            if self.walls_block_line_of_sight(player_pos, new_pos, walls):
+            if self.walls_block_line_of_sight(player_pos, new_pos, walls, padding=self.wall_path_padding):
                 return True
         return False
 
