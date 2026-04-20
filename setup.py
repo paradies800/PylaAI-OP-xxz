@@ -63,6 +63,9 @@ def get_gpu_data():
     return "cpu", 0.0, "Generic CPU"
 
 def ask_user(prompt_text):
+    if os.environ.get("PYLAAI_SETUP_AUTO", "").strip().lower() in ("1", "true", "yes"):
+        print(f"\n{prompt_text} (Y/N): Y [auto]")
+        return True
     print(f"\n{prompt_text} (Y/N): ", end='', flush=True)
     response = sys.stdin.readline().strip().lower()
     return response in ['y', 'yes']

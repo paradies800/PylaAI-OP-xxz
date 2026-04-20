@@ -19,6 +19,13 @@ This repository is intended for devs and it's recommended for others to use the 
 **Warning :** This is the source-code, which is meant for developpers or people that know how to install python libraries and run python scripts --> The official build is linked in the discord, which is the source-code converted into an exe so you don't need additional knowledge to run the bot. (You will have to go through a linkvertise link)
 
 How to run :
+- One-click Windows setup:
+  - Download or clone this repository.
+  - Run `setup.exe` from the project folder.
+  - The installer checks for Python 3.11 64-bit, installs Python 3.11.9 if needed, installs the bot dependencies, chooses GPU acceleration automatically when possible, and creates `Start PylaAI.bat`.
+  - Start your emulator, open Brawl Stars, then run `Start PylaAI.bat`.
+
+Manual setup :
 - Install Python and Git. This project was tested with Python 3.11.
 - Install an Android emulator with ADB support. MuMu Player, LDPlayer, BlueStacks, MEmu, and other ADB emulators may work.
 - Clone this fork:
