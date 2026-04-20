@@ -222,9 +222,9 @@ class TrophyObserver:
             self.current_trophies += delta_with_bonus
             bucket = self._showdown_place_to_bucket[game_result]
             if streak_bonus:
-                print(f"Showdown place: {game_result} → delta {delta:+d} (+{streak_bonus} streak bonus)")
+                print(f"Showdown place: {game_result} -> delta {delta:+d} (+{streak_bonus} streak bonus)")
             else:
-                print(f"Showdown place: {game_result} → delta {delta:+d}")
+                print(f"Showdown place: {game_result} -> delta {delta:+d}")
         elif game_result == "victory":
             self.win_streak += 1
             self.current_trophies += self.calc_win_increment()

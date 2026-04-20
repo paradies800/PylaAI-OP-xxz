@@ -100,19 +100,6 @@ def install_python():
     ])
 
 
-def create_start_file(project_dir, python_command):
-    python_invocation = " ".join(f'"{part}"' if " " in part else part for part in python_command)
-    start_bat = project_dir / "Start PylaAI.bat"
-    start_bat.write_text(
-        "@echo off\n"
-        "cd /d %~dp0\n"
-        f"{python_invocation} main.py\n"
-        "pause\n",
-        encoding="ascii",
-    )
-    print(f"Created {start_bat.name}")
-
-
 def main():
     project_dir = app_dir()
     setup_py = project_dir / "setup.py"
@@ -142,11 +129,10 @@ def main():
     env = os.environ.copy()
     env["PYLAAI_SETUP_AUTO"] = "1"
     run(python_command + ["setup.py", "install"], cwd=project_dir, env=env)
-    create_start_file(project_dir, python_command)
 
     print("")
     print("PylaAI setup completed.")
-    print("Start your emulator, open Brawl Stars, then run Start PylaAI.bat or python main.py.")
+    print("Start your emulator, open Brawl Stars, then run python main.py.")
     input("Press Enter to close...")
     return 0
 

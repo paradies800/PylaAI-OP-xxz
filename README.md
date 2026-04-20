@@ -16,30 +16,29 @@ What the bot does in Showdown:
 PylaAI is currently the best external Brawl Stars bot.
 This repository is intended for devs and it's recommended for others to use the official version from the discord.
 
-**Warning :** This is the source-code, which is meant for developpers or people that know how to install python libraries and run python scripts --> The official build is linked in the discord, which is the source-code converted into an exe so you don't need additional knowledge to run the bot. (You will have to go through a linkvertise link)
+**Warning :** This is a source-code fork. It now includes a one-click Windows setup helper, but the official build and support are still linked in the Pyla Discord.
 
-How to run :
-- One-click Windows setup:
-  - Download or clone this repository.
-  - Run `setup.exe` from the project folder.
-  - The installer checks for Python 3.11 64-bit, installs Python 3.11.9 if needed, installs the bot dependencies, chooses GPU acceleration automatically when possible, and creates `Start PylaAI.bat`.
-  - Start your emulator, open Brawl Stars, then run `Start PylaAI.bat`.
+## Installation / How to run
 
-Manual setup :
-- Install Python and Git. This project was tested with Python 3.11.
-- Install an Android emulator with ADB support. MuMu Player, LDPlayer, BlueStacks, MEmu, and other ADB emulators may work.
-- Clone this fork:
-  `git clone https://github.com/paradies800/PylaAI-OP.git`
-- Open the project folder:
-  `cd PylaAI-OP`
-- Install the required Python packages:
-  `python setup.py install`
-- Start your emulator and open Brawl Stars.
-- Set the emulator resolution to 1920x1080 for best results.
-- Run the bot:
-  `python main.py`
-- In the hub, choose the emulator you are using.
-- Select your brawler setup, then press Start.
+For normal users, you only need `setup.exe`.
+
+1. Download or clone this repository.
+2. Open the project folder.
+3. Run `setup.exe`.
+4. Wait until setup finishes. It will:
+   - install Python 3.11.9 if Python 3.11 64-bit is missing
+   - install all required Python packages
+   - install the best available ONNX Runtime option for your PC, including GPU acceleration when possible
+5. Start your Android emulator.
+6. Open Brawl Stars in the emulator.
+7. Set the emulator resolution to `1920x1080` for best results.
+8. Run `python main.py`.
+9. In the hub, choose your emulator, select your brawler setup, then press Start.
+
+Manual developer setup:
+- Install Python 3.11 and Git.
+- Run `python setup.py install`.
+- Run `python main.py`.
 
 Brawl Stars API trophy autofill :
 - Create an official Brawl Stars API token at https://developer.brawlstars.com/
