@@ -220,9 +220,14 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
     api_token = _extract_api_token(api_token)
     cleaned_tag = str(player_tag).strip().upper()
     if not api_token:
-        raise ValueError("Missing api_token in cfg/brawl_stars_api.toml")
+        raise ValueError(
+            "Missing api_token in cfg/brawl_stars_api.toml. Fill api_token manually, "
+            "or enable auto_refresh_token and fill developer_email/developer_password."
+        )
     if not cleaned_tag or cleaned_tag == "#YOURTAG":
-        raise ValueError("Missing player_tag in cfg/brawl_stars_api.toml")
+        raise ValueError(
+            "Missing player_tag in cfg/brawl_stars_api.toml. Replace #YOURTAG with your Brawl Stars player tag."
+        )
     if not cleaned_tag.startswith("#"):
         cleaned_tag = f"#{cleaned_tag}"
 
