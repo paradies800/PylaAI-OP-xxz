@@ -159,6 +159,7 @@ class WindowController:
             self.last_frame = None
             self.last_frame_time = 0.0
             self.frame_id = 0
+            self.last_stale_warning_time = 0.0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 15.0
             self.start_scrcpy_client()
@@ -186,6 +187,7 @@ class WindowController:
             self.last_frame = None
             self.last_frame_time = 0.0
             self.frame_id = 0
+            self.last_stale_warning_time = 0.0
 
         client_kwargs = {"device": self.device, "max_width": 0}
         if self.scrcpy_max_fps:
@@ -197,6 +199,7 @@ class WindowController:
     def restart_scrcpy_client(self):
         print("Restarting scrcpy client...")
         old_client = self.scrcpy_client
+        self.scrcpy_client = None
         if old_client is not None:
             def stop_old_client():
                 try:
@@ -209,7 +212,7 @@ class WindowController:
             stop_thread.join(timeout=2)
             if stop_thread.is_alive():
                 print("Old scrcpy client did not stop within 2s; starting a new client anyway.")
-        time.sleep(1)
+        time.sleep(0.4)
         self.start_scrcpy_client()
         print("Scrcpy client restarted successfully.")
 
@@ -257,7 +260,9 @@ class WindowController:
 
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
-            print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
+            if time.time() - self.last_stale_warning_time > 2:
+                print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
+                self.last_stale_warning_time = time.time()
 
 
         if not self.width or not self.height:
@@ -370,4 +375,7 @@ class WindowController:
 
     def close(self):
         if hasattr(self, 'scrcpy_client'):
-            self.scrcpy_client.stop()
+            client = self.scrcpy_client
+            self.scrcpy_client = None
+            if client is not None:
+                client.stop()

@@ -70,6 +70,8 @@ def pyla_main(data):
             self.cooldown_start_time = 0
             self.cooldown_duration = 3 * 60
             self.last_stale_feed_recovery = 0.0
+            self.stale_feed_recovery_attempts = 0
+            self.last_stale_feed_message = 0.0
             self.last_disconnect_check = 0.0
             self.disconnect_reload_attempts = 0
             self.last_processed_frame_id = -1
@@ -162,6 +164,31 @@ def pyla_main(data):
                 time.sleep(3)
             return True
 
+        def handle_stale_scrcpy_feed(self, frame_time=None):
+            now = time.time()
+            stale_age = now - frame_time if frame_time else 0
+            age_text = f"{stale_age:.1f}s old" if frame_time else "missing"
+            self.Play.window_controller.keys_up(list("wasd"))
+
+            if now - self.last_stale_feed_recovery < 5:
+                if now - self.last_stale_feed_message > 2:
+                    remaining = 5 - (now - self.last_stale_feed_recovery)
+                    print(f"Scrcpy frame is still {age_text}; retrying recovery in {remaining:.1f}s.")
+                    self.last_stale_feed_message = now
+                return
+
+            self.last_stale_feed_recovery = now
+            self.stale_feed_recovery_attempts += 1
+
+            if self.stale_feed_recovery_attempts >= 3 or stale_age > 45:
+                print("Scrcpy feed is still frozen; restarting Brawl Stars and scrcpy.")
+                self.window_controller.restart_brawl_stars()
+                self.window_controller.restart_scrcpy_client()
+                self.stale_feed_recovery_attempts = 0
+            else:
+                print(f"Scrcpy frame is {age_text}; restarting scrcpy feed.")
+                self.window_controller.restart_scrcpy_client()
+
         def main(self): #this is for timer to stop after time
             s_time = time.time()
             c = 0
@@ -188,18 +215,19 @@ def pyla_main(data):
                     s_time = time.time()
                     c = 0
 
-                frame = self.window_controller.screenshot()
+                try:
+                    frame = self.window_controller.screenshot()
+                except ConnectionError as e:
+                    print(f"{e} Recovering scrcpy feed.")
+                    self.handle_stale_scrcpy_feed()
+                    continue
 
                 _, last_ft = self.window_controller.get_latest_frame()
                 if last_ft > 0 and (time.time() - last_ft) > self.window_controller.FRAME_STALE_TIMEOUT:
-                    self.Play.window_controller.keys_up(list("wasd"))
-                    if time.time() - self.last_stale_feed_recovery > 30:
-                        print("Stale scrcpy frame detected -- restarting scrcpy feed.")
-                        self.last_stale_feed_recovery = time.time()
-                        self.window_controller.restart_scrcpy_client()
-                    else:
-                        print("Stale frame detected, waiting for scrcpy recovery cooldown.")
+                    self.handle_stale_scrcpy_feed(last_ft)
                     continue
+
+                self.stale_feed_recovery_attempts = 0
 
                 frame_id = self.window_controller.get_latest_frame_id()
                 if frame_id == self.last_processed_frame_id:
