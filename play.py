@@ -47,17 +47,35 @@ class Movement:
         self.is_hypercharge_ready = False
         self.window_controller = window_controller
         self.TILE_SIZE = 60
-        # Separate unstuck state for analog (angle-based) movement, so the
-        # existing string-based unstuck for other game modes is untouched.
-        self.fix_angle_state = {
-            "delay_to_trigger": bot_config["unstuck_movement_delay"],
-            "duration": bot_config["unstuck_movement_hold_time"],
-            "toggled": False,
-            "started_at": time.time(),
-            "last_angle": None,
-            "last_angle_change": time.time(),
-            "fixed_angle": None,
+        # Wall-based stuck detector: samples wall bboxes on an interval, ignores
+        # walls near the player (they flicker as he overlaps them), and flags
+        # "stuck" when walls don't move for wall_stuck_timeout seconds while the
+        # bot is trying to move. Triggers a semicircle escape maneuver.
+        self.wall_stuck_enabled = str(bot_config.get("wall_stuck_enabled", "yes")).lower() in ("yes", "true", "1")
+        general_config = load_toml_as_dict("cfg/general_config.toml")
+        self.wall_stuck_debug = str(general_config.get("wall_stuck_debug", "no")).lower() in ("yes", "true", "1")
+        self.wall_stuck_ignore_radius = float(bot_config.get("wall_stuck_ignore_radius", 150))
+        self.wall_stuck_sample_interval = float(bot_config.get("wall_stuck_sample_interval", 0.2))
+        self.wall_stuck_shift_threshold = float(bot_config.get("wall_stuck_shift_threshold", 3.0))
+        self.wall_stuck_timeout = float(bot_config.get("wall_stuck_timeout", 3.0))
+        self.wall_stuck_min_walls = int(bot_config.get("wall_stuck_min_walls", 3))
+        self.wall_stuck_state = {
+            "last_sample_time": 0.0,
+            "last_wall_centers": None,   # np.ndarray (N, 2) of filtered wall centers
+            "stationary_since": None,    # when walls first went stationary; None = not stationary
         }
+
+        # Semicircle escape state. Alternates side globally between triggers.
+        self.escape_retreat_duration = float(bot_config.get("escape_retreat_duration", 0.4))
+        self.escape_arc_duration = float(bot_config.get("escape_arc_duration", 1.2))
+        self.escape_arc_degrees = float(bot_config.get("escape_arc_degrees", 135.0))
+        self.escape_state = {
+            "phase": None,            # "retreat" | "arc" | None
+            "started_at": 0.0,
+            "retreat_angle": 0.0,
+            "arc_side": 1,            # +1 = CCW, -1 = CW; flipped each trigger
+        }
+        self._next_arc_side = 1
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -169,55 +187,141 @@ class Movement:
 
         return movement
 
-    def unstuck_angle_if_needed(self, angle: float, current_time: float = None) -> float:
-        """Unstuck routine for analog joystick movement.
-
-        Works by tracking how long the requested angle has stayed roughly the
-        same (±20°). If it has been locked for longer than delay_to_trigger,
-        we assume the bot is pressed against something the wall detector
-        missed and we force a ~135° deflection for `duration` seconds to
-        wiggle free.
+    def _wslog(self, *args):
+        """Dedicated logger for wall-stuck / escape — independent of vlog/visual_debug
+        so the new unstuck machinery can be traced without dumping the full debug stream.
         """
-        if current_time is None:
-            current_time = time.time()
+        if self.wall_stuck_debug:
+            print("[WS]", *args)
 
-        state = self.fix_angle_state
+    def _wall_centers_filtered(self, walls, player_pos):
+        """Return (N, 2) float array of wall centers, excluding walls whose
+        center lies within wall_stuck_ignore_radius of the player (those
+        flicker as the player overlaps them).
+        """
+        import numpy as np
+        if not walls:
+            return np.empty((0, 2), dtype=np.float32)
+        centers = []
+        px, py = player_pos
+        r2 = self.wall_stuck_ignore_radius * self.wall_stuck_ignore_radius
+        for box in walls:
+            x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+            cx = (x1 + x2) * 0.5
+            cy = (y1 + y2) * 0.5
+            dx, dy = cx - px, cy - py
+            if dx * dx + dy * dy >= r2:
+                centers.append((cx, cy))
+        return np.asarray(centers, dtype=np.float32) if centers else np.empty((0, 2), dtype=np.float32)
 
-        # If an unstuck deflection is already active, keep using it until it expires
-        if state['toggled']:
-            if current_time - state['started_at'] > state['duration']:
-                state['toggled'] = False
-                state['last_angle'] = angle
-                state['last_angle_change'] = current_time
-                vlog("unstuck(angle): finished")
-                return angle
-            vlog(f"unstuck(angle): active → {state['fixed_angle']:.1f}°")
-            return state['fixed_angle']
+    def _avg_wall_shift(self, prev_centers, curr_centers):
+        """Greedy nearest-neighbor match between two sets of wall centers.
+        Returns mean pairwise distance (px). Returns None if either set is too
+        small (can't form a reliable metric).
+        """
+        import numpy as np
+        if prev_centers is None or len(prev_centers) < self.wall_stuck_min_walls:
+            return None
+        if len(curr_centers) < self.wall_stuck_min_walls:
+            return None
+        # For each prev center, find nearest curr center (O(N*M), fine for N~20)
+        diffs = prev_centers[:, None, :] - curr_centers[None, :, :]
+        d2 = (diffs * diffs).sum(axis=2)
+        nearest = np.sqrt(d2.min(axis=1))
+        return float(nearest.mean())
 
-        # Track how long the commanded angle has been (roughly) unchanged
-        if state['last_angle'] is None:
-            state['last_angle'] = angle
-            state['last_angle_change'] = current_time
-            return angle
+    def detect_wall_stuck(self, walls, player_pos, is_trying_to_move, current_time):
+        """Wall-based stuck detector. Returns True if the walls around the
+        player have been stationary longer than wall_stuck_timeout while the
+        bot was issuing movement commands — meaning the bot is pressed against
+        something and not actually moving.
+        """
+        if not self.wall_stuck_enabled or player_pos is None:
+            return False
+        state = self.wall_stuck_state
+        if current_time - state["last_sample_time"] < self.wall_stuck_sample_interval:
+            # Between samples: just honor the latest stationary flag
+            if state["stationary_since"] is None or not is_trying_to_move:
+                return False
+            return (current_time - state["stationary_since"]) >= self.wall_stuck_timeout
 
-        diff = abs((angle - state['last_angle'] + 180) % 360 - 180)
-        if diff > 20:
-            state['last_angle'] = angle
-            state['last_angle_change'] = current_time
-            return angle
+        curr_centers = self._wall_centers_filtered(walls, player_pos)
+        shift = self._avg_wall_shift(state["last_wall_centers"], curr_centers)
+        state["last_wall_centers"] = curr_centers
+        state["last_sample_time"] = current_time
 
-        # Angle has stayed similar — check if it has been long enough to trigger
-        if current_time - state['last_angle_change'] > state['delay_to_trigger']:
-            # Deflect by ±135° (random side) to wiggle around the obstacle
-            offset = random.choice((135.0, -135.0))
-            deflected = (angle + offset) % 360
-            state['fixed_angle'] = deflected
-            state['toggled'] = True
-            state['started_at'] = current_time
-            vlog(f"unstuck(angle) triggered: {angle:.1f}° → {deflected:.1f}°")
-            return deflected
+        if shift is None:
+            # Not enough walls to judge — treat as "unknown", don't advance timer
+            state["stationary_since"] = None
+            return False
 
-        return angle
+        if shift < self.wall_stuck_shift_threshold:
+            if state["stationary_since"] is None:
+                state["stationary_since"] = current_time
+            self._wslog(f"walls shift={shift:.2f}px, stationary for "
+                        f"{current_time - state['stationary_since']:.2f}s "
+                        f"(trying_to_move={is_trying_to_move})")
+        else:
+            if state["stationary_since"] is not None:
+                self._wslog(f"walls moved again: shift={shift:.2f}px, resetting timer")
+            state["stationary_since"] = None
+
+        if state["stationary_since"] is None or not is_trying_to_move:
+            return False
+        return (current_time - state["stationary_since"]) >= self.wall_stuck_timeout
+
+    def _reset_wall_stuck_state(self, current_time):
+        """Clear the wall-stuck timer. Call after triggering an escape to
+        avoid retriggering during/just after the maneuver.
+        """
+        self.wall_stuck_state["stationary_since"] = None
+        self.wall_stuck_state["last_wall_centers"] = None
+        self.wall_stuck_state["last_sample_time"] = current_time
+
+    def start_semicircle_escape(self, angle, current_time):
+        """Begin the retreat+arc escape maneuver. arc_side alternates globally
+        between triggers.
+        """
+        side = self._next_arc_side
+        self._next_arc_side = -side
+        self.escape_state["phase"] = "retreat"
+        self.escape_state["started_at"] = current_time
+        self.escape_state["retreat_angle"] = self.angle_opposite(angle)
+        self.escape_state["arc_side"] = side
+        self._wslog(f"semicircle escape START: angle={angle:.1f}° "
+                    f"retreat={self.escape_state['retreat_angle']:.1f}° "
+                    f"side={'CCW' if side > 0 else 'CW'}")
+
+    def semicircle_escape_step(self, current_time):
+        """Return the current commanded angle for the active escape maneuver,
+        or None if no maneuver is active / it just finished.
+        """
+        state = self.escape_state
+        phase = state["phase"]
+        if phase is None:
+            return None
+        elapsed = current_time - state["started_at"]
+
+        if phase == "retreat":
+            if elapsed < self.escape_retreat_duration:
+                return state["retreat_angle"]
+            # Transition: arc starts from retreat angle and sweeps arc_degrees
+            state["phase"] = "arc"
+            state["started_at"] = current_time
+            self._wslog("semicircle escape: retreat done, starting arc")
+            elapsed = 0.0
+            phase = "arc"
+
+        if phase == "arc":
+            if elapsed >= self.escape_arc_duration:
+                state["phase"] = None
+                self._wslog("semicircle escape: finished")
+                return None
+            t = elapsed / self.escape_arc_duration  # 0..1
+            sweep = self.escape_arc_degrees * t * state["arc_side"]
+            return (state["retreat_angle"] + sweep) % 360
+
+        return None
 
 
 class Play(Movement):
@@ -278,6 +382,27 @@ class Play(Movement):
         # Narrow range because the fog fully overlays whatever is under it.
         self.fog_hsv_low = (50, 95, 215)
         self.fog_hsv_high = (60, 125, 245)
+        # Fog proximity override: movement flees fog when a real fog front is
+        # within this distance. Attack logic is untouched.
+        self.fog_flee_distance = 130
+        # Confidence filters to avoid reacting to stray pixels:
+        #   - morph opening kernel removes speckle noise
+        #   - only connected fog blobs ≥ this many pixels are trusted
+        #   - need at least this many trusted fog pixels inside the flee
+        #     radius before the override kicks in
+        self.fog_min_blob_pixels = 300
+        self.fog_min_pixels_in_radius = 50
+        # Run the fog-threat check once every N calls to get_showdown_movement.
+        # Between checks the previous decision is reused.
+        self.fog_check_every_n_frames = 3
+        self._fog_check_counter = 0
+        self._fog_threat_cached = None
+        # Per-frame cache of the trusted fog mask, keyed by id(frame).
+        # Cache covers one pipeline run so the mask is not rebuilt when both
+        # detect_fog_threat and detect_fog_direction are called on the same frame.
+        self._fog_mask_cache_frame_id = None
+        self._fog_mask_cache_value = None
+        self._fog_mask_cache_origin = None
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -344,58 +469,112 @@ class Play(Movement):
             # If no movement is possible, return empty string
             return preferred_movement
 
-    def detect_fog_direction(self, frame, player_position):
-        """Find the dominant fog direction relative to the player.
+    def _build_trusted_fog_mask(self, frame, roi_center, roi_radius):
+        """Return (mask, (ox, oy)) or None.
 
-        Builds an HSV mask of the fog color and computes the centroid of fog
-        pixels. Returns the angle FROM the player TO the fog centroid (degrees),
-        or None if there is not enough fog in the frame.
+        Only processes an ROI of side 2*roi_radius+1 around roi_center —
+        we only care about fog that's close to the player.
+        Mask contains only fog pixels that belong to a large, morphologically
+        clean blob — not stray color noise. (ox, oy) is the ROI's top-left
+        offset in frame coordinates so callers can translate back.
+
+        Result is cached per-frame (keyed by id(frame) and ROI tuple).
         """
         if frame is None:
             return None
 
+        cache_key = (id(frame), int(roi_center[0]), int(roi_center[1]), int(roi_radius))
+        if self._fog_mask_cache_frame_id == cache_key:
+            return self._fog_mask_cache_value
+
         import numpy as np
-        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        h, w = frame.shape[:2]
+        cx, cy = int(roi_center[0]), int(roi_center[1])
+        x0, y0 = max(0, cx - roi_radius), max(0, cy - roi_radius)
+        x1, y1 = min(w, cx + roi_radius + 1), min(h, cy + roi_radius + 1)
+        if x0 >= x1 or y0 >= y1:
+            self._fog_mask_cache_frame_id = cache_key
+            self._fog_mask_cache_value = None
+            return None
+        region = frame[y0:y1, x0:x1]
+        origin = (x0, y0)
+
+        hsv = cv2.cvtColor(region, cv2.COLOR_RGB2HSV)
         low = np.array(self.fog_hsv_low, dtype=np.uint8)
         high = np.array(self.fog_hsv_high, dtype=np.uint8)
         mask = cv2.inRange(hsv, low, high)
 
-        fog_pixel_count = int(cv2.countNonZero(mask))
-        # Need at least a meaningful chunk of fog on screen to trust the result
-        if fog_pixel_count < 500:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        result = None
+        if num_labels > 1:
+            trusted = np.zeros_like(mask)
+            any_kept = False
+            for label in range(1, num_labels):
+                if stats[label, cv2.CC_STAT_AREA] >= self.fog_min_blob_pixels:
+                    trusted[labels == label] = 255
+                    any_kept = True
+            if any_kept and cv2.countNonZero(trusted) > 0:
+                result = (trusted, origin)
+
+        self._fog_mask_cache_frame_id = cache_key
+        self._fog_mask_cache_value = result
+        return result
+
+    def detect_fog_threat(self, frame, player_position):
+        """Check whether a real fog front is within self.fog_flee_distance of
+        the player. Returns the flee angle (away from local fog mass) if so,
+        else None.
+
+        Confidence pipeline:
+          1. HSV threshold → raw mask.
+          2. Morph open + size-filtered connected components → trusted mask.
+          3. Count trusted fog pixels inside a disk of radius fog_flee_distance
+             around the player. If count ≥ fog_min_pixels_in_radius, it's a
+             real incoming front — not a stray artifact.
+        The flee direction is the angle opposite to the centroid of the
+        trusted fog pixels *inside the radius*, so we run away from the
+        closest wall of fog, not from fog on the far side of the map.
+        """
+        r = self.fog_flee_distance
+        built = self._build_trusted_fog_mask(frame, roi_center=player_position, roi_radius=r)
+        if built is None:
+            return None
+        mask, (ox, oy) = built
+
+        import numpy as np
+        px, py = int(player_position[0]), int(player_position[1])
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0:
             return None
 
-        moments = cv2.moments(mask, binaryImage=True)
-        if moments["m00"] == 0:
-            return None
-        fog_cx = moments["m10"] / moments["m00"]
-        fog_cy = moments["m01"] / moments["m00"]
-
-        dx = fog_cx - player_position[0]
-        dy = fog_cy - player_position[1]
-        if math.hypot(dx, dy) < 1:
+        # Translate ROI-local coords to frame coords, then filter to circle
+        dx_all = (xs + ox) - px
+        dy_all = (ys + oy) - py
+        dist_sq = dx_all * dx_all + dy_all * dy_all
+        inside = dist_sq <= r * r
+        count = int(inside.sum())
+        if count < self.fog_min_pixels_in_radius:
             return None
 
-        vlog(f"fog centroid=({int(fog_cx)},{int(fog_cy)}) pixels={fog_pixel_count}")
-        return self.angle_from_direction(dx, dy)
+        # Centroid of the nearby fog mass, then flee opposite direction
+        cx = float(dx_all[inside].mean())
+        cy = float(dy_all[inside].mean())
+        if math.hypot(cx, cy) < 1:
+            return None
+        toward_fog = self.angle_from_direction(cx, cy)
+        flee = self.angle_opposite(toward_fog)
+        vlog(f"fog threat: {count}px within {r}px → flee angle={flee:.1f}° (fog at {toward_fog:.1f}°)")
+        return flee
 
     def showdown_roam(self, player_data, walls):
-        """Roam movement for showdown: move away from the poison fog.
-
-        If fog is visible, head away from its centroid. Otherwise spin in
-        place (rotate the joystick angle each call) to look around without
-        committing to a direction.
+        """Idle roam movement for showdown: rotate the joystick angle each
+        call to look around. Close-fog avoidance is handled by the uniform
+        fog-threat override in get_showdown_movement.
         """
-        player_position = self.get_player_pos(player_data)
-
-        fog_angle = self.detect_fog_direction(self.current_frame, player_position)
-        if fog_angle is not None:
-            desired_angle = self.angle_opposite(fog_angle)
-            vlog(f"roam: fog detected → flee angle={desired_angle:.1f}° (fog at {fog_angle:.1f}°)")
-            return self.find_best_angle(player_position, desired_angle, walls)
-
-        # Nothing to chase, nothing to flee — spin in place
-        self._roam_spin_angle = (getattr(self, "_roam_spin_angle", 0.0) + 30.0) % 360
+        self._roam_spin_angle = (getattr(self, "_roam_spin_angle", 0.0) + 15.0) % 360
         vlog(f"roam: idle spin → angle={self._roam_spin_angle:.1f}°")
         return self._roam_spin_angle
 
@@ -463,38 +642,64 @@ class Play(Movement):
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
         player_pos = self.get_player_pos(player_data)
 
+        # Fog override is applied uniformly at the end so it works for all
+        # three movement sources (chase/retreat enemy, follow teammate, roam).
+        # Throttled: only actually run the detector once every N calls and
+        # reuse the last decision in between — the fog advances slowly enough
+        # that a few frames of staleness don't matter.
+        self._fog_check_counter += 1
+        if self._fog_check_counter >= self.fog_check_every_n_frames:
+            self._fog_threat_cached = self.detect_fog_threat(self.current_frame, player_pos)
+            self._fog_check_counter = 0
+        fog_flee_angle = self._fog_threat_cached
+
+        enemy_coords = None
+        enemy_distance = None
+
         # --- No enemy in sight: follow teammate or roam ---
         if not self.is_there_enemy(enemy_data):
             if teammate_data:
                 vlog(f"no enemy → follow teammate ({len(teammate_data)} visible)")
-                return self.showdown_follow_teammate(player_data, teammate_data, walls)
-            vlog("no enemy, no teammate → roam")
-            return self.showdown_roam(player_data, walls)
-
-        enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, walls, "attack")
-        if enemy_coords is None:
-            if teammate_data:
-                vlog("enemy detected but unreachable → follow teammate")
-                return self.showdown_follow_teammate(player_data, teammate_data, walls)
-            vlog("enemy detected but unreachable, no teammate → roam")
-            return self.showdown_roam(player_data, walls)
-
-        # --- Compute exact angle toward/away from enemy, then wall-avoid ---
-        direction_x = enemy_coords[0] - player_pos[0]
-        direction_y = enemy_coords[1] - player_pos[1]
-        toward_angle = self.angle_from_direction(direction_x, direction_y)
-
-        if enemy_distance > safe_range:
-            desired = toward_angle
-            vlog(f"enemy detected → approach desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+                angle = self.showdown_follow_teammate(player_data, teammate_data, walls)
+            else:
+                vlog("no enemy, no teammate → roam")
+                angle = self.showdown_roam(player_data, walls)
         else:
-            desired = self.angle_opposite(toward_angle)
-            vlog(f"enemy too close → retreat desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+            enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, walls, "attack")
+            if enemy_coords is None:
+                if teammate_data:
+                    vlog("enemy detected but unreachable → follow teammate")
+                    angle = self.showdown_follow_teammate(player_data, teammate_data, walls)
+                else:
+                    vlog("enemy detected but unreachable, no teammate → roam")
+                    angle = self.showdown_roam(player_data, walls)
+            else:
+                # --- Compute exact angle toward/away from enemy, then wall-avoid ---
+                direction_x = enemy_coords[0] - player_pos[0]
+                direction_y = enemy_coords[1] - player_pos[1]
+                toward_angle = self.angle_from_direction(direction_x, direction_y)
 
-        angle = self.find_best_angle(player_pos, desired, walls)
-        vlog(f"showdown: movement angle={angle:.1f}° (desired={desired:.1f}°)")
+                if enemy_distance > safe_range:
+                    desired = toward_angle
+                    vlog(f"enemy detected → approach desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+                else:
+                    desired = self.angle_opposite(toward_angle)
+                    vlog(f"enemy too close → retreat desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
 
-        # --- Skills ---
+                angle = self.find_best_angle(player_pos, desired, walls)
+                vlog(f"showdown: movement angle={angle:.1f}° (desired={desired:.1f}°)")
+
+        # --- Fog proximity override ---
+        # If trusted fog is close, replace movement with a flee angle. Attack
+        # block below still fires independently based on enemy_distance.
+        if fog_flee_angle is not None:
+            angle = self.find_best_angle(player_pos, fog_flee_angle, walls)
+            vlog(f"showdown: fog override → angle={angle:.1f}°")
+
+        # --- Skills (only when an attackable enemy was found) ---
+        if enemy_coords is None:
+            return angle
+
         if self.is_super_ready and self.time_since_holding_attack is None:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, walls, "super")
@@ -714,7 +919,19 @@ class Play(Movement):
         current_time = time.time()
         if current_time - self.time_since_movement > self.minimum_movement_delay:
             if isinstance(movement, float):
-                movement = self.unstuck_angle_if_needed(movement, current_time)
+                # 1. If a semicircle escape is already running, just advance it.
+                escape_angle = self.semicircle_escape_step(current_time)
+                if escape_angle is not None:
+                    movement = escape_angle
+                else:
+                    # 2. Wall-based stuck detector triggers the semicircle escape.
+                    player_pos = self.get_player_pos(data['player'][0]) if data.get('player') else None
+                    walls = data.get('wall') or []
+                    is_trying = isinstance(movement, float)
+                    if self.detect_wall_stuck(walls, player_pos, is_trying, current_time):
+                        self.start_semicircle_escape(movement, current_time)
+                        self._reset_wall_stuck_state(current_time)
+                        movement = self.semicircle_escape_step(current_time) or movement
             else:
                 movement = self.unstuck_movement_if_needed(movement, current_time)
             self.do_movement(movement)
@@ -945,7 +1162,7 @@ class Play(Movement):
         movement = self.loop(brawler, data, current_time)
 
         if visual_debug:
-            self.show_visual_debug(frame, data)
+            self.show_visual_debug(frame, data, brawler)
 
         # if data:
         #     # Record scene data
@@ -957,38 +1174,51 @@ class Play(Movement):
         #         'movement': movement,
         #     })
 
-    def show_visual_debug(self, frame, data):
+    def show_visual_debug(self, frame, data, brawler=None):
         import numpy as np
         img = frame.copy() if isinstance(frame, np.ndarray) else np.array(frame)
 
-        # --- Fog mask overlay (magenta tint on detected fog pixels) ---
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        low = np.array(self.fog_hsv_low, dtype=np.uint8)
-        high = np.array(self.fog_hsv_high, dtype=np.uint8)
-        fog_mask = cv2.inRange(hsv, low, high)
-        if cv2.countNonZero(fog_mask) > 0:
-            tint = np.zeros_like(img)
-            tint[:, :] = (255, 0, 255)  # magenta in RGB
-            img = np.where(fog_mask[..., None] > 0,
-                           cv2.addWeighted(img, 0.5, tint, 0.5, 0),
-                           img)
-            # Draw fog centroid and arrow from player to it
-            moments = cv2.moments(fog_mask, binaryImage=True)
-            if moments["m00"] > 0 and data.get("player"):
-                fog_cx = int(moments["m10"] / moments["m00"])
-                fog_cy = int(moments["m01"] / moments["m00"])
-                cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
-                cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-                px, py = self.get_player_pos(data["player"][0])
-                cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
-                                (255, 0, 255), 2, tipLength=0.15)
+        # --- Fog overlay ---
+        # Only draw the fog tint + centroid arrow when a fog threat is strong
+        # enough to trigger evasion (same thresholds as detect_fog_threat):
+        # trusted mask inside flee-radius must contain >= fog_min_pixels_in_radius.
+        if data.get("player"):
+            px, py = self.get_player_pos(data["player"][0])
+            r = self.fog_flee_distance
+            built = self._build_trusted_fog_mask(frame, roi_center=(px, py), roi_radius=r)
+            if built is not None:
+                mask, (ox, oy) = built
+                ys, xs = np.nonzero(mask)
+                if xs.size > 0:
+                    dx_all = (xs + ox) - px
+                    dy_all = (ys + oy) - py
+                    dist_sq = dx_all * dx_all + dy_all * dy_all
+                    inside = dist_sq <= r * r
+                    if int(inside.sum()) >= self.fog_min_pixels_in_radius:
+                        # Paint only the trusted, in-radius pixels magenta
+                        full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                        xs_in = xs[inside] + ox
+                        ys_in = ys[inside] + oy
+                        full_mask[ys_in, xs_in] = 255
+                        tint = np.zeros_like(img)
+                        tint[:, :] = (255, 0, 255)  # magenta in RGB
+                        img = np.where(full_mask[..., None] > 0,
+                                       cv2.addWeighted(img, 0.5, tint, 0.5, 0),
+                                       img)
+                        fog_cx = int(dx_all[inside].mean() + px)
+                        fog_cy = int(dy_all[inside].mean() + py)
+                        cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
+                        cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                        cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
+                                        (255, 0, 255), 2, tipLength=0.15)
 
+        # Colors in RGB (frame is kept in RGB; converted to BGR only for imshow).
         colors = {
-            "player":   (0, 255, 0),
-            "enemy":    (0, 0, 255),
-            "teammate": (0, 165, 255),
-            "wall":     (128, 128, 128),
+            "player":   (0, 255, 0),    # green
+            "teammate": (0, 0, 255),    # blue
+            "enemy":    (255, 0, 0),    # red
+            "wall":     (128, 128, 128),  # gray
         }
         for key, color in colors.items():
             boxes = data.get(key)
@@ -999,6 +1229,19 @@ class Play(Movement):
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(img, key, (x1, max(y1 - 6, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # Draw attack/super ranges around the player based on brawlers_info.json.
+        if brawler and data.get("player"):
+            info = self.brawlers_info.get(brawler)
+            if info:
+                px, py = self.get_player_pos(data["player"][0])
+                center = (int(px), int(py))
+                attack_range = int(info.get("attack_range", 0))
+                super_range = int(info.get("super_range", 0))
+                if attack_range > 0:
+                    cv2.circle(img, center, attack_range, (160, 32, 240), 2)  # purple
+                if super_range > 0:
+                    cv2.circle(img, center, super_range, (255, 255, 0), 2)  # yellow
 
         cv2.imshow("Pyla Visual Debug", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         cv2.waitKey(1)

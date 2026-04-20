@@ -1,0 +1,19 @@
+[eve]
+defeat = 55
+victory = 83
+draw = 45
+
+[total]
+defeat = 1
+victory = 7
+draw = 3
+
+[squeak]
+defeat = 18
+victory = 32
+draw = 22
+
+[mortis]
+defeat = 1
+victory = 7
+draw = 4

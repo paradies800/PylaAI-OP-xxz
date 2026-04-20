@@ -1,5 +1,6 @@
 import atexit
 import math
+import socket
 import threading
 import time
 import cv2
@@ -35,7 +36,7 @@ EMULATOR_PORTS = {
     "BlueStacks": [5555, 5556, 5557, 5565],
     "LDPlayer": [5555, 5557, 5559, 5554],
     "MEmu": [21503, 21513, 21523, 5555],
-    "MuMu": [16384, 16416, 16448, 7555, 5558, 5555],
+    "MuMu": [16384, 16416, 16448, 7555, 5558, 5557, 5556, 5555, 5554],
     "Others": [5555, 5558, 7555, 16384, 16416, 16448, 21503, 5635],
 }
 
@@ -52,6 +53,15 @@ def _unique_ports(ports):
         if port not in unique:
             unique.append(port)
     return unique
+
+
+def _is_port_open(host, port, timeout=0.05):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            return sock.connect_ex((host, port)) == 0
+    except OSError:
+        return False
 
 
 def _serial_port(serial):
@@ -116,11 +126,15 @@ class WindowController:
             device_list = list_online_devices()
             preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
 
-            if not preferred_devices and not device_list:
-                # Try connecting to common ports if none are online yet.
-                # Note: 5037 is the ADB server port — never try to connect to
-                # it as if it were a device.
-                for port in candidate_ports:
+            # Probe selected/common emulator ports quickly before calling adb.connect.
+            # If nothing is online yet, fall back to the full candidate list so
+            # generic "Others" setups still have a chance. Port 5037 is filtered
+            # out by _unique_ports because it is the ADB server port.
+            if not preferred_devices and (selected_emulator != "Others" or not device_list):
+                ports_to_try = [port for port in candidate_ports if _is_port_open("127.0.0.1", port)]
+                if not ports_to_try and not device_list:
+                    ports_to_try = candidate_ports
+                for port in ports_to_try:
                     try:
                         adb.connect(f"127.0.0.1:{port}")
                     except Exception:

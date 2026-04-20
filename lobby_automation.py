@@ -17,9 +17,12 @@ class LobbyAutomation:
     def check_for_idle(self, frame):
         wr = self.window_controller.width_ratio
         hr = self.window_controller.height_ratio
-        x_start, x_end = int(400 * wr), int(1500 * wr)
-        y_start, y_end = int(380 * hr), int(700 * hr)
-        gray_pixels = count_hsv_pixels(frame[y_start:y_end, x_start:x_end], (0, 0, 55), (10, 15, 77))
+        # Tight ROI centered on the Idle Disconnect dialog body, so we don't
+        # pick up dark gameplay pixels outside the box. V range is wide enough
+        # to cover both LDPlayer (bright overlay, V~82) and MuMu (dark overlay, V~28).
+        x_start, x_end = int(700 * wr), int(1220 * wr)
+        y_start, y_end = int(470 * hr), int(620 * hr)
+        gray_pixels = count_hsv_pixels(frame[y_start:y_end, x_start:x_end], (0, 0, 18), (10, 20, 100))
         if debug: print(f"gray pixels (if > {gray_pixels_treshold} then bot will try to unidle) :", gray_pixels)
         if gray_pixels > gray_pixels_treshold:
             self.window_controller.click(int(535 * wr), int(615 * hr))
