@@ -280,7 +280,7 @@ class Play(Movement):
         self.fog_hsv_high = (60, 125, 245)
         # Fog proximity override: movement flees fog when a real fog front is
         # within this distance. Attack logic is untouched.
-        self.fog_flee_distance = 120
+        self.fog_flee_distance = 130
         # Confidence filters to avoid reacting to stray pixels:
         #   - morph opening kernel removes speckle noise
         #   - only connected fog blobs ≥ this many pixels are trusted
@@ -1046,7 +1046,7 @@ class Play(Movement):
         movement = self.loop(brawler, data, current_time)
 
         if visual_debug:
-            self.show_visual_debug(frame, data)
+            self.show_visual_debug(frame, data, brawler)
 
         # if data:
         #     # Record scene data
@@ -1058,38 +1058,51 @@ class Play(Movement):
         #         'movement': movement,
         #     })
 
-    def show_visual_debug(self, frame, data):
+    def show_visual_debug(self, frame, data, brawler=None):
         import numpy as np
         img = frame.copy() if isinstance(frame, np.ndarray) else np.array(frame)
 
-        # --- Fog mask overlay (magenta tint on detected fog pixels) ---
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        low = np.array(self.fog_hsv_low, dtype=np.uint8)
-        high = np.array(self.fog_hsv_high, dtype=np.uint8)
-        fog_mask = cv2.inRange(hsv, low, high)
-        if cv2.countNonZero(fog_mask) > 0:
-            tint = np.zeros_like(img)
-            tint[:, :] = (255, 0, 255)  # magenta in RGB
-            img = np.where(fog_mask[..., None] > 0,
-                           cv2.addWeighted(img, 0.5, tint, 0.5, 0),
-                           img)
-            # Draw fog centroid and arrow from player to it
-            moments = cv2.moments(fog_mask, binaryImage=True)
-            if moments["m00"] > 0 and data.get("player"):
-                fog_cx = int(moments["m10"] / moments["m00"])
-                fog_cy = int(moments["m01"] / moments["m00"])
-                cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
-                cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-                px, py = self.get_player_pos(data["player"][0])
-                cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
-                                (255, 0, 255), 2, tipLength=0.15)
+        # --- Fog overlay ---
+        # Only draw the fog tint + centroid arrow when a fog threat is strong
+        # enough to trigger evasion (same thresholds as detect_fog_threat):
+        # trusted mask inside flee-radius must contain >= fog_min_pixels_in_radius.
+        if data.get("player"):
+            px, py = self.get_player_pos(data["player"][0])
+            r = self.fog_flee_distance
+            built = self._build_trusted_fog_mask(frame, roi_center=(px, py), roi_radius=r)
+            if built is not None:
+                mask, (ox, oy) = built
+                ys, xs = np.nonzero(mask)
+                if xs.size > 0:
+                    dx_all = (xs + ox) - px
+                    dy_all = (ys + oy) - py
+                    dist_sq = dx_all * dx_all + dy_all * dy_all
+                    inside = dist_sq <= r * r
+                    if int(inside.sum()) >= self.fog_min_pixels_in_radius:
+                        # Paint only the trusted, in-radius pixels magenta
+                        full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                        xs_in = xs[inside] + ox
+                        ys_in = ys[inside] + oy
+                        full_mask[ys_in, xs_in] = 255
+                        tint = np.zeros_like(img)
+                        tint[:, :] = (255, 0, 255)  # magenta in RGB
+                        img = np.where(full_mask[..., None] > 0,
+                                       cv2.addWeighted(img, 0.5, tint, 0.5, 0),
+                                       img)
+                        fog_cx = int(dx_all[inside].mean() + px)
+                        fog_cy = int(dy_all[inside].mean() + py)
+                        cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
+                        cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                        cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
+                                        (255, 0, 255), 2, tipLength=0.15)
 
+        # Colors in RGB (frame is kept in RGB; converted to BGR only for imshow).
         colors = {
-            "player":   (0, 255, 0),
-            "enemy":    (0, 0, 255),
-            "teammate": (0, 165, 255),
-            "wall":     (128, 128, 128),
+            "player":   (0, 255, 0),    # green
+            "teammate": (0, 0, 255),    # blue
+            "enemy":    (255, 0, 0),    # red
+            "wall":     (128, 128, 128),  # gray
         }
         for key, color in colors.items():
             boxes = data.get(key)
@@ -1100,6 +1113,19 @@ class Play(Movement):
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(img, key, (x1, max(y1 - 6, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # Draw attack/super ranges around the player based on brawlers_info.json.
+        if brawler and data.get("player"):
+            info = self.brawlers_info.get(brawler)
+            if info:
+                px, py = self.get_player_pos(data["player"][0])
+                center = (int(px), int(py))
+                attack_range = int(info.get("attack_range", 0))
+                super_range = int(info.get("super_range", 0))
+                if attack_range > 0:
+                    cv2.circle(img, center, attack_range, (160, 32, 240), 2)  # purple
+                if super_range > 0:
+                    cv2.circle(img, center, super_range, (255, 255, 0), 2)  # yellow
 
         cv2.imshow("Pyla Visual Debug", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         cv2.waitKey(1)
