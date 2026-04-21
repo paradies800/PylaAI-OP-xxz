@@ -1,6 +1,8 @@
 import threading
 import tkinter as tk
 
+import customtkinter as ctk
+
 
 class RuntimeControlWindow:
     def __init__(self):
@@ -21,21 +23,45 @@ class RuntimeControlWindow:
         self._closed.set()
 
     def _run(self):
-        root = tk.Tk()
+        ctk.set_appearance_mode("dark")
+
+        root = ctk.CTk()
         root.title("Pyla Control")
-        root.geometry("230x120")
+        root.geometry("280x170")
         root.resizable(False, False)
         root.attributes("-topmost", True)
 
         status_var = tk.StringVar(value="Running")
-        button_var = tk.StringVar(value="Pause")
+        button_var = tk.StringVar(value="Pause Bot")
+
+        card = ctk.CTkFrame(root, fg_color="#242424", corner_radius=8)
+        card.pack(fill="both", expand=True, padx=12, pady=12)
+
+        title = ctk.CTkLabel(
+            card,
+            text="PylaAI Bot Control",
+            text_color="#FFFFFF",
+            font=("Arial", 17, "bold"),
+        )
+        title.pack(pady=(14, 2))
+
+        status_label = ctk.CTkLabel(
+            card,
+            textvariable=status_var,
+            text_color="#2FCE66",
+            font=("Arial", 14, "bold"),
+        )
+        status_label.pack(pady=(0, 12))
 
         def refresh():
             paused = self._paused.is_set()
             status_var.set("Paused" if paused else "Running")
-            button_var.set("Resume" if paused else "Pause")
-            status_label.configure(fg="#d98b1f" if paused else "#2f9e44")
-            pause_button.configure(bg="#2f9e44" if paused else "#aa2a2a")
+            button_var.set("Resume Bot" if paused else "Pause Bot")
+            status_label.configure(text_color="#FFB23F" if paused else "#2FCE66")
+            pause_button.configure(
+                fg_color="#2F8F4E" if paused else "#AA2A2A",
+                hover_color="#3DAF62" if paused else "#BB3A3A",
+            )
 
         def toggle_pause():
             if self._paused.is_set():
@@ -49,28 +75,29 @@ class RuntimeControlWindow:
             self._closed.set()
             root.destroy()
 
-        root.protocol("WM_DELETE_WINDOW", on_close)
-
-        title = tk.Label(root, text="PylaAI Bot Control", font=("Arial", 12, "bold"))
-        title.pack(pady=(10, 4))
-
-        status_label = tk.Label(root, textvariable=status_var, font=("Arial", 11, "bold"), fg="#2f9e44")
-        status_label.pack(pady=(0, 8))
-
-        pause_button = tk.Button(
-            root,
+        pause_button = ctk.CTkButton(
+            card,
             textvariable=button_var,
             command=toggle_pause,
-            width=14,
-            height=1,
-            bg="#aa2a2a",
-            fg="white",
-            activebackground="#bb3a3a",
-            activeforeground="white",
-            relief="flat",
-            font=("Arial", 11, "bold"),
+            width=170,
+            height=40,
+            corner_radius=8,
+            fg_color="#AA2A2A",
+            hover_color="#BB3A3A",
+            text_color="#FFFFFF",
+            font=("Arial", 15, "bold"),
         )
-        pause_button.pack()
+        pause_button.pack(pady=(0, 8))
+
+        hint = ctk.CTkLabel(
+            card,
+            text="Movement stops instantly while paused.",
+            text_color="#BEBEBE",
+            font=("Arial", 11),
+        )
+        hint.pack()
+
+        root.protocol("WM_DELETE_WINDOW", on_close)
 
         def poll_closed():
             if self._closed.is_set():
