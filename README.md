@@ -81,24 +81,6 @@ Performance troubleshooting :
 - Keep some free RAM. If memory is above about 85%, close Discord/browser/other games before running the bot.
 - Enable `Debug Screen` in Additional Settings to open a live vision overlay while the bot runs. It shows player, teammate, enemy, wall, fog, and range overlays.
 
-Vision model improvement :
-- The active in-game vision model is `models/mainInGameModel.onnx`.
-- To improve it properly, capture frames where the model misses the player, enemy, or teammate, label them, train, then export a new ONNX model.
-- Enable capture in `cfg/general_config.toml`:
-  `capture_bad_vision_frames = "yes"`
-- Run the bot for bad rounds. Missed player frames and wall-stuck frames are saved under `debug_frames/vision`.
-- Build a YOLO dataset folder:
-  `python tools/create_vision_dataset.py`
-- Label the images in YOLO format with these classes:
-  `0 enemy`
-  `1 teammate`
-  `2 player`
-- Train and export on GPU:
-  `python tools/train_vision_model.py --device 0`
-- After testing the exported model, install it:
-  `python tools/install_vision_model.py --source runs/vision_train/pylaai_vision/weights/best.onnx`
-- CPU training works but is usually too slow. Use a GPU whenever possible.
-
 Notes :
 - This is the "localhost" version which means everything API related isn't enabled (login, online stats tracking, auto brawler list updating, auto icon updating, auto wall model updating). 
 You can make it "online" by changing the base api url in utils.py and recoding the app to answer to the different endpoints. Site's code might become opensource but currently isn't.
