@@ -46,6 +46,8 @@ class Movement:
         self.time_since_hypercharge_checked = time.time()
         self.is_hypercharge_ready = False
         self.window_controller = window_controller
+        self.attack_cooldown = float(bot_config.get("attack_cooldown", 0.16))
+        self.last_attack_time = 0.0
         self.TILE_SIZE = 60
         # Wall-based stuck detector: samples wall bboxes on an interval, ignores
         # walls near the player (they flicker as he overlaps them), and flags
@@ -110,7 +112,13 @@ class Movement:
         return "S" if direction_y > 0 else "W"
 
     def attack(self, touch_up=True, touch_down=True):
+        if touch_up and touch_down and self.attack_cooldown > 0:
+            current_time = time.time()
+            if current_time - self.last_attack_time < self.attack_cooldown:
+                return False
+            self.last_attack_time = current_time
         self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
+        return True
 
     def use_hypercharge(self):
         print("Using hypercharge")

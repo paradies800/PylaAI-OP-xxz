@@ -201,7 +201,13 @@ class SelectBrawler:
     def get_adb_device_for_quick_select(self):
         general_config = load_toml_as_dict("cfg/general_config.toml")
         configured_port = general_config.get("emulator_port", 0)
+        brawl_package = general_config.get("brawl_stars_package", "com.supercell.brawlstars").strip()
         preferred_ports = [configured_port, 16384, 16416, 16448, 7555, 5558, 5555]
+        configured_ports = []
+        try:
+            configured_ports = [int(configured_port)]
+        except (TypeError, ValueError):
+            pass
 
         def serial_port(serial):
             if serial.startswith("emulator-"):
@@ -216,10 +222,40 @@ class SelectBrawler:
                     return None
             return None
 
-        devices = adb.device_list()
-        for dev in devices:
-            if serial_port(dev.serial) in preferred_ports:
-                return dev
+        def online_devices():
+            devices = []
+            for dev in adb.device_list():
+                try:
+                    if dev.get_state() == "device":
+                        devices.append(dev)
+                except Exception:
+                    pass
+            return devices
+
+        def choose_device(devices):
+            best_device = None
+            best_score = None
+            for index, dev in enumerate(devices):
+                port = serial_port(dev.serial)
+                try:
+                    opened_package = dev.app_current().package.strip()
+                except Exception:
+                    opened_package = ""
+                score = (
+                    opened_package == brawl_package,
+                    port in configured_ports,
+                    port in preferred_ports,
+                    -index,
+                )
+                if best_score is None or score > best_score:
+                    best_device = dev
+                    best_score = score
+            return best_device
+
+        devices = online_devices()
+        device = choose_device(devices)
+        if device:
+            return device
 
         for port in preferred_ports:
             if port == 5037:
@@ -229,10 +265,11 @@ class SelectBrawler:
             except Exception:
                 pass
 
-        devices = adb.device_list()
-        if not devices:
+        devices = online_devices()
+        device = choose_device(devices)
+        if not device:
             raise ConnectionError("No ADB device found for Push All 1k.")
-        return devices[0]
+        return device
 
     def quick_select_least_trophies_brawler(self):
         device = self.get_adb_device_for_quick_select()

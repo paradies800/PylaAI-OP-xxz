@@ -110,6 +110,34 @@ class WindowController:
                     if _serial_port(dev.serial) in preferred_ports or dev.serial in preferred_serials
                 ]
 
+            def choose_best_device(devices, selected_emulator, configured_port):
+                preferred_ports = set(_unique_ports([configured_port] + EMULATOR_PORTS.get(selected_emulator, [])))
+                configured_ports = _unique_ports([configured_port])
+                configured_port = configured_ports[0] if configured_ports else None
+                configured_serial = f"127.0.0.1:{configured_port}" if configured_port is not None else ""
+                preferred_serials = {f"127.0.0.1:{port}" for port in preferred_ports}
+                best_device = None
+                best_package = ""
+                best_score = None
+
+                for index, dev in enumerate(devices):
+                    port = _serial_port(dev.serial)
+                    try:
+                        opened_package = dev.app_current().package.strip()
+                    except Exception:
+                        opened_package = ""
+                    score = (
+                        opened_package == BRAWL_STARS_PACKAGE.strip(),
+                        port == configured_port or dev.serial == configured_serial,
+                        port in preferred_ports or dev.serial in preferred_serials,
+                        -index,
+                    )
+                    if best_score is None or score > best_score:
+                        best_device = dev
+                        best_package = opened_package
+                        best_score = score
+                return best_device, best_package
+
             general_config = load_toml_as_dict("cfg/general_config.toml")
             selected_emulator = general_config.get("current_emulator", "Others")
             configured_port = general_config.get("emulator_port", 0)
@@ -146,11 +174,14 @@ class WindowController:
                 tried_ports = ", ".join(str(port) for port in candidate_ports)
                 raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
 
-            self.device = preferred_devices[0] if preferred_devices else device_list[0]
-            if selected_emulator != "Others" and not preferred_devices:
+            self.device, opened_package = choose_best_device(device_list, selected_emulator, configured_port)
+            selected_is_preferred = self.device in preferred_devices
+            if opened_package == BRAWL_STARS_PACKAGE.strip():
+                print(f"Selected ADB device with Brawl Stars in foreground: {self.device.serial}")
+            if selected_emulator != "Others" and not selected_is_preferred:
                 print(
                     f"Could not identify a {selected_emulator} device by port; "
-                    f"using first online ADB device instead."
+                    f"using best online ADB device instead."
                 )
             print(f"Connected to {selected_emulator}: {self.device.serial}")
 

@@ -1,6 +1,7 @@
 gamemode_type = 3
 bot_uses_gadgets = "yes"
 minimum_movement_delay = 0.1
+attack_cooldown = 0.16
 gamemode = "showdown"
 unstuck_movement_delay = 3.0
 unstuck_movement_hold_time = 1.2
