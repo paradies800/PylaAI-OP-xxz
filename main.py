@@ -14,6 +14,7 @@ from gui.main import App
 from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
+from runtime_control import RuntimeControlWindow
 from stage_manager import StageManager
 from state_finder import get_state
 from time_management import TimeManagement
@@ -79,6 +80,10 @@ def pyla_main(data):
             self.last_processed_frame_id = -1
             self.ips_ema = None
             self.disconnect_ocr_interval = 6.0
+            self.control_window = RuntimeControlWindow()
+            self.control_window.start()
+            self.was_paused = False
+            self.pause_started_at = None
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -206,10 +211,38 @@ def pyla_main(data):
                 print(f"Scrcpy frame is {age_text}; restarting scrcpy feed.")
                 self.window_controller.restart_scrcpy_client()
 
+        def handle_pause_control(self):
+            if not self.control_window.is_paused():
+                if self.was_paused:
+                    paused_for = time.time() - self.pause_started_at if self.pause_started_at else 0
+                    self.start_time += paused_for
+                    self.Play.time_since_detections["player"] = time.time()
+                    self.Play.time_since_detections["enemy"] = time.time()
+                    self.Play.time_since_player_last_found = time.time()
+                    self.Play.time_since_last_proceeding = time.time()
+                    self.last_processed_frame_id = -1
+                    self.was_paused = False
+                    self.pause_started_at = None
+                    print("Bot resumed.")
+                return False
+
+            if not self.was_paused:
+                self.window_controller.keys_up(list("wasd"))
+                self.Play.reset_match_control_state()
+                self.was_paused = True
+                self.pause_started_at = time.time()
+                print("Bot paused.")
+            time.sleep(0.1)
+            return True
+
         def main(self): #this is for timer to stop after time
             s_time = time.time()
             c = 0
             while True:
+                if self.handle_pause_control():
+                    s_time = time.time()
+                    c = 0
+                    continue
                 if self.max_ips:
                     frame_start = time.perf_counter()
                 if self.run_for_minutes > 0 and not self.in_cooldown:
@@ -266,6 +299,8 @@ def pyla_main(data):
                     work_time = time.perf_counter() - frame_start
                     if work_time < target_period:
                         time.sleep(target_period - work_time)
+
+            self.control_window.close()
 
     main = Main()
     main.main()

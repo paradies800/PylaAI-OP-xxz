@@ -68,6 +68,7 @@ Recovery features :
 - If Brawl Stars closes or another app is in front, the bot can relaunch Brawl Stars.
 - If the Brawl Stars Idle Disconnect / Reload dialog appears, the bot presses Reload.
 - If the scrcpy video feed freezes, the bot restarts the scrcpy feed instead of repeatedly restarting Brawl Stars.
+- While the bot is running, a small `Pyla Control` window lets you pause and resume movement safely.
 
 Performance troubleshooting :
 - Run `python tools/performance_check.py`.
