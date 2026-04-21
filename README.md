@@ -6,6 +6,7 @@ What the bot does in Showdown:
 
 - **Analog joystick movement.** Brawlers are moved by a continuous angle, not WASD taps, so pathing and dodging are smoother than in the stock client-agnostic modes.
 - **Follows teammates in trio** when there's no enemy to chase, with hysteresis so it doesn't ping-pong between two nearby teammates.
+- **Trio team spacing.** The bot avoids stacking directly on teammates, orbits when grouped, and biases back toward the team instead of chasing too far alone.
 - **Passive roam** when alone and safe — slow rotation of standing still.
 - **Poison fog avoidance.** Detects the fog and when a trusted fog mass enters the flee radius around the player, overrides movement to run the opposite way.
 - **Wall-based unstuck detector + semicircle escape.** If surrounding walls stop moving while the bot is commanding movement, it's pressed against something — the bot retreats from the obstacle and then sweeps a semicircular arc around it. The arc side alternates between triggers.
@@ -75,6 +76,25 @@ Performance troubleshooting :
 - If DirectML is active but still very slow, try `directml_device_id = "1"` in `cfg/general_config.toml`, then restart the bot.
 - Turn off Windows Efficiency mode for the emulator if Task Manager shows it. Efficiency mode can cap emulator frame delivery and make the bot look stuck at 2-5 IPS.
 - Keep some free RAM. If memory is above about 85%, close Discord/browser/other games before running the bot.
+- Enable `Debug Screen` in Additional Settings to open a live vision overlay while the bot runs. It shows player, teammate, enemy, wall, fog, and range overlays.
+
+Vision model improvement :
+- The active in-game vision model is `models/mainInGameModel.onnx`.
+- To improve it properly, capture frames where the model misses the player, enemy, or teammate, label them, train, then export a new ONNX model.
+- Enable capture in `cfg/general_config.toml`:
+  `capture_bad_vision_frames = "yes"`
+- Run the bot for bad rounds. Missed player frames and wall-stuck frames are saved under `debug_frames/vision`.
+- Build a YOLO dataset folder:
+  `python tools/create_vision_dataset.py`
+- Label the images in YOLO format with these classes:
+  `0 enemy`
+  `1 teammate`
+  `2 player`
+- Train and export on GPU:
+  `python tools/train_vision_model.py --device 0`
+- After testing the exported model, install it:
+  `python tools/install_vision_model.py --source runs/vision_train/pylaai_vision/weights/best.onnx`
+- CPU training works but is usually too slow. Use a GPU whenever possible.
 
 Notes :
 - This is the "localhost" version which means everything API related isn't enabled (login, online stats tracking, auto brawler list updating, auto icon updating, auto wall model updating). 

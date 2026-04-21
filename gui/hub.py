@@ -85,6 +85,8 @@ class Hub:
         self.general_config.setdefault("current_emulator", "LDPlayer")
         self.general_config.setdefault("emulator_port", 5555)
         self.general_config.setdefault("terminal_logging", "no")
+        self.general_config.setdefault("visual_debug", "no")
+        self.general_config.setdefault("capture_bad_vision_frames", "no")
 
         # -----------------------------------------------------------------------------------------
         # Appearance
@@ -823,6 +825,60 @@ class Hub:
         self.attach_tooltip(
             term_log_cb,
             "If enabled, terminal output is saved to logs/pyla_<date>.log files. Takes effect on next launch."
+        )
+        row_idx += 1
+
+        lbl_debug_screen = ctk.CTkLabel(container, text="Debug Screen:", font=("Arial", S(18)))
+        lbl_debug_screen.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))
+        debug_screen_var = tk.BooleanVar(
+            value=(str(self.general_config["visual_debug"]).lower() in ["yes", "true"])
+        )
+
+        def toggle_debug_screen():
+            self.general_config["visual_debug"] = "yes" if debug_screen_var.get() else "no"
+            save_dict_as_toml(self.general_config, self.general_config_path)
+
+        debug_screen_cb = ctk.CTkCheckBox(
+            container,
+            text="",
+            variable=debug_screen_var,
+            command=toggle_debug_screen,
+            fg_color="#AA2A2A",
+            hover_color="#BB3A3A",
+            width=S(30),
+            height=S(30)
+        )
+        debug_screen_cb.grid(row=row_idx, column=1, sticky="w", padx=S(20), pady=S(10))
+        self.attach_tooltip(
+            debug_screen_cb,
+            "Shows a live OpenCV debug window with detected player, teammate, enemy, wall, fog, and range overlays. Takes effect on next bot start."
+        )
+        row_idx += 1
+
+        lbl_capture_vision = ctk.CTkLabel(container, text="Capture Vision Frames:", font=("Arial", S(18)))
+        lbl_capture_vision.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))
+        capture_vision_var = tk.BooleanVar(
+            value=(str(self.general_config["capture_bad_vision_frames"]).lower() in ["yes", "true"])
+        )
+
+        def toggle_capture_vision():
+            self.general_config["capture_bad_vision_frames"] = "yes" if capture_vision_var.get() else "no"
+            save_dict_as_toml(self.general_config, self.general_config_path)
+
+        capture_vision_cb = ctk.CTkCheckBox(
+            container,
+            text="",
+            variable=capture_vision_var,
+            command=toggle_capture_vision,
+            fg_color="#AA2A2A",
+            hover_color="#BB3A3A",
+            width=S(30),
+            height=S(30)
+        )
+        capture_vision_cb.grid(row=row_idx, column=1, sticky="w", padx=S(20), pady=S(10))
+        self.attach_tooltip(
+            capture_vision_cb,
+            "Saves bad vision frames for model training when the player is lost or wall-stuck. Takes effect on next bot start."
         )
         row_idx += 1
 

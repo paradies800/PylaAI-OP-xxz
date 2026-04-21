@@ -1,4 +1,6 @@
 import math
+import json
+import os
 import random
 import time
 
@@ -389,6 +391,11 @@ class Play(Movement):
         self.locked_teammate = None
         self.locked_teammate_distance = float('inf')
         self.teammate_hysteresis = 0.20  # Switch only if another teammate is 20% closer
+        self.trio_grouping_enabled = str(bot_config.get("trio_grouping_enabled", "yes")).lower() in ("yes", "true", "1")
+        self.teammate_follow_min_distance = float(bot_config.get("teammate_follow_min_distance", 180))
+        self.teammate_follow_max_distance = float(bot_config.get("teammate_follow_max_distance", 520))
+        self.teammate_combat_regroup_distance = float(bot_config.get("teammate_combat_regroup_distance", 650))
+        self.teammate_combat_bias = float(bot_config.get("teammate_combat_bias", 0.35))
         self.wall_history = []
         self.wall_history_length = 3  # Number of frames to keep walls
         self.scene_data = []
@@ -404,6 +411,16 @@ class Play(Movement):
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = load_toml_as_dict("cfg/bot_config.toml")["seconds_to_hold_attack_after_reaching_max"]
         self.current_frame = None
+        general_config = load_toml_as_dict("cfg/general_config.toml")
+        global debug, visual_debug
+        debug = str(general_config.get("super_debug", "no")).lower() in ("yes", "true", "1")
+        visual_debug = str(general_config.get("visual_debug", "no")).lower() in ("yes", "true", "1")
+        self.capture_bad_vision_frames = str(general_config.get("capture_bad_vision_frames", "no")).lower() in ("yes", "true", "1")
+        self.bad_vision_capture_dir = general_config.get("bad_vision_capture_dir", "debug_frames/vision")
+        self.bad_vision_capture_interval = float(general_config.get("bad_vision_capture_interval", 2.0))
+        self.bad_vision_capture_max = int(general_config.get("bad_vision_capture_max", 500))
+        self._bad_vision_last_capture = {}
+        self._bad_vision_capture_count = 0
         # Fog color (poison gas in showdown) — sampled from images/fog_sample.png.
         # Narrow range because the fog fully overlays whatever is under it.
         self.fog_hsv_low = (50, 95, 215)
@@ -429,6 +446,38 @@ class Play(Movement):
         self._fog_mask_cache_frame_id = None
         self._fog_mask_cache_value = None
         self._fog_mask_cache_origin = None
+
+    def capture_vision_frame(self, reason, frame, data=None, brawler=None, extra=None):
+        if not self.capture_bad_vision_frames or frame is None:
+            return
+        if self._bad_vision_capture_count >= self.bad_vision_capture_max:
+            return
+        now = time.time()
+        last = self._bad_vision_last_capture.get(reason, 0.0)
+        if now - last < self.bad_vision_capture_interval:
+            return
+
+        safe_reason = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(reason))
+        folder = os.path.join(self.bad_vision_capture_dir, safe_reason)
+        os.makedirs(folder, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int((now % 1) * 1000):03d}"
+        image_path = os.path.join(folder, f"{stamp}.png")
+        meta_path = os.path.join(folder, f"{stamp}.json")
+
+        cv2.imwrite(image_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        metadata = {
+            "reason": reason,
+            "brawler": brawler or self.current_brawler,
+            "time": now,
+            "data": data or {},
+            "extra": extra or {},
+        }
+        with open(meta_path, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2)
+
+        self._bad_vision_last_capture[reason] = now
+        self._bad_vision_capture_count += 1
+        print(f"Captured vision frame: {image_path}")
 
     def reset_match_control_state(self):
         self.window_controller.keys_up(list("wasd"))
@@ -621,19 +670,38 @@ class Play(Movement):
         vlog(f"roam: idle spin → angle={self._roam_spin_angle:.1f}°")
         return self._roam_spin_angle
 
-    def showdown_follow_teammate(self, player_data, teammate_data, walls):
-        """Move towards the closest visible teammate, avoiding walls."""
-        player_pos = self.get_player_pos(player_data)
+    @staticmethod
+    def angle_to_vector(angle_degrees):
+        angle_rad = math.radians(angle_degrees)
+        return math.cos(angle_rad), math.sin(angle_rad)
 
-        # Find the closest detected teammate this frame
+    def blend_angles(self, primary_angle, secondary_angle, secondary_weight):
+        primary_weight = max(0.0, 1.0 - secondary_weight)
+        sx = max(0.0, secondary_weight)
+        ax, ay = self.angle_to_vector(primary_angle)
+        bx, by = self.angle_to_vector(secondary_angle)
+        dx = ax * primary_weight + bx * sx
+        dy = ay * primary_weight + by * sx
+        if math.hypot(dx, dy) < 0.01:
+            return primary_angle
+        return self.angle_from_direction(dx, dy)
+
+    def get_closest_teammate(self, player_data, teammate_data):
+        player_pos = self.get_player_pos(player_data)
         closest_teammate = None
         closest_distance = float('inf')
-        for tm in teammate_data:
+        for tm in teammate_data or []:
             tm_pos = self.get_enemy_pos(tm)
             dist = self.get_distance(tm_pos, player_pos)
             if dist < closest_distance:
                 closest_distance = dist
                 closest_teammate = tm_pos
+        return closest_teammate, closest_distance
+
+    def showdown_follow_teammate(self, player_data, teammate_data, walls):
+        """Keep a useful Trio Showdown spacing around the closest teammate."""
+        player_pos = self.get_player_pos(player_data)
+        closest_teammate, closest_distance = self.get_closest_teammate(player_data, teammate_data)
 
         if closest_teammate is None:
             self.locked_teammate = None
@@ -659,10 +727,19 @@ class Play(Movement):
 
         direction_x = self.locked_teammate[0] - player_pos[0]
         direction_y = self.locked_teammate[1] - player_pos[1]
-
-        angle = self.angle_from_direction(direction_x, direction_y)
+        teammate_angle = self.angle_from_direction(direction_x, direction_y)
+        if self.trio_grouping_enabled and closest_distance < self.teammate_follow_min_distance:
+            angle = self.angle_opposite(teammate_angle)
+            action = "space"
+        elif self.trio_grouping_enabled and closest_distance <= self.teammate_follow_max_distance:
+            orbit_side = 1 if (int(time.time() / 2) % 2 == 0) else -1
+            angle = (teammate_angle + 90 * orbit_side) % 360
+            action = "orbit"
+        else:
+            angle = teammate_angle
+            action = "follow"
         best = self.find_best_angle(player_pos, angle, walls)
-        vlog(f"follow teammate → angle={best:.1f}° (desired={angle:.1f}°, dist={int(closest_distance)}px, "
+        vlog(f"{action} teammate → angle={best:.1f}° (desired={angle:.1f}°, dist={int(closest_distance)}px, "
              f"player={int(player_pos[0])},{int(player_pos[1])} tm={int(self.locked_teammate[0])},{int(self.locked_teammate[1])})")
         return best
 
@@ -728,6 +805,16 @@ class Play(Movement):
                 else:
                     desired = self.angle_opposite(toward_angle)
                     vlog(f"enemy too close → retreat desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+
+                if (self.trio_grouping_enabled and teammate_data and enemy_distance > attack_range):
+                    closest_teammate, teammate_distance = self.get_closest_teammate(player_data, teammate_data)
+                    if closest_teammate is not None and teammate_distance > self.teammate_combat_regroup_distance:
+                        team_angle = self.angle_from_direction(
+                            closest_teammate[0] - player_pos[0],
+                            closest_teammate[1] - player_pos[1],
+                        )
+                        desired = self.blend_angles(desired, team_angle, self.teammate_combat_bias)
+                        vlog(f"combat regroup bias → desired={desired:.1f}° (team dist={int(teammate_distance)}px)")
 
                 angle = self.find_best_angle(player_pos, desired, walls)
                 vlog(f"showdown: movement angle={angle:.1f}° (desired={desired:.1f}°)")
@@ -973,6 +1060,7 @@ class Play(Movement):
                     walls = data.get('wall') or []
                     is_trying = isinstance(movement, float)
                     if self.detect_wall_stuck(walls, player_pos, is_trying, current_time):
+                        self.capture_vision_frame("wall_stuck", self.current_frame, data, brawler)
                         self.start_semicircle_escape(movement, current_time)
                         self._reset_wall_stuck_state(current_time)
                         movement = self.semicircle_escape_step(current_time) or movement
@@ -1153,7 +1241,8 @@ class Play(Movement):
 
     def main(self, frame, brawler, main):
         current_time = time.time()
-        data = self.get_main_data(frame)
+        raw_data = self.get_main_data(frame)
+        data = raw_data
         if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:
 
             tile_data = self.get_tile_data(frame)
@@ -1176,6 +1265,13 @@ class Play(Movement):
                     data = None
         if not data:
             if current_time - self.time_since_player_last_found > 1.0:
+                self.capture_vision_frame(
+                    "player_lost",
+                    frame,
+                    {"raw_detection": raw_data},
+                    brawler,
+                    {"state": getattr(main, "state", None)},
+                )
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
