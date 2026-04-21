@@ -60,6 +60,7 @@ class StageManager:
         # didn't clear the screen before the outer loop called us again).
         self.last_recorded_result_time = 0.0
         self.last_recorded_result = None
+        self.active_end_result = None
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
         time_thresholds = load_toml_as_dict("./cfg/time_tresholds.toml")
         self.end_screen_dismiss_delay = float(time_thresholds.get("end_screen_dismiss_delay", 0.35))
@@ -182,15 +183,10 @@ class StageManager:
         button_pressed = False
         end_screen_time = time.time()
 
-        # If this is a re-entry on the same lingering end-of-match screen
-        # (happened within the last 30s), skip recording and just keep trying
-        # to dismiss it.
+        # If this is a re-entry on the same lingering end-of-match screen,
+        # skip recording and just keep trying to dismiss it.
         current_result = current_state.split("_", 1)[1] if current_state.startswith("end_") else None
-        already_recorded = (
-            current_result is not None
-            and self.last_recorded_result == current_result
-            and time.time() - self.last_recorded_result_time < 30
-        )
+        already_recorded = current_result is not None and self.active_end_result == current_result
         stats_recorded = already_recorded
         if already_recorded:
             found_game_result = current_result
@@ -205,6 +201,7 @@ class StageManager:
                 self.time_since_last_stat_change = time.time()
                 self.last_recorded_result = found_game_result
                 self.last_recorded_result_time = time.time()
+                self.active_end_result = found_game_result
                 stats_recorded = True
                 values = {
                     "trophies": self.Trophy_observer.current_trophies,
@@ -270,6 +267,8 @@ class StageManager:
             self.window_controller.click(*popup_location)
 
     def do_state(self, state, data=None):
+        if not str(state).startswith("end"):
+            self.active_end_result = None
         if data is not None:
             self.states[state](data)
             return

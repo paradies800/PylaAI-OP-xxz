@@ -33,6 +33,10 @@ class Movement:
         self.game_mode = bot_config["gamemode_type"]
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
+        self.gadget_cooldown = float(bot_config.get("gadget_cooldown", 1.0))
+        self.last_gadget_time = 0.0
+        self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
+        self.last_super_time = 0.0
         self.super_treshold = time_config["super"]
         self.gadget_treshold = time_config["gadget"]
         self.hypercharge_treshold = time_config["hypercharge"]
@@ -125,12 +129,24 @@ class Movement:
         self.window_controller.press_key("H")
 
     def use_gadget(self):
+        if self.gadget_cooldown > 0:
+            current_time = time.time()
+            if current_time - self.last_gadget_time < self.gadget_cooldown:
+                return False
+            self.last_gadget_time = current_time
         print("Using gadget")
         self.window_controller.press_key("G")
+        return True
 
     def use_super(self):
+        if self.super_cooldown > 0:
+            current_time = time.time()
+            if current_time - self.last_super_time < self.super_cooldown:
+                return False
+            self.last_super_time = current_time
         print("Using super")
         self.window_controller.press_key("E")
+        return True
 
     @staticmethod
     def get_random_attack_key():
@@ -859,7 +875,7 @@ class Play(Movement):
     @staticmethod
     def validate_game_data(data):
         incomplete = False
-        if "player" not in data.keys():
+        if not data.get("player"):
             incomplete = True  # This is required so track_no_detections can also keep track if enemy is missing
 
         if "enemy" not in data.keys():
@@ -1149,7 +1165,6 @@ class Play(Movement):
             data['wall'] = walls
         elif self.keep_walls_in_memory:
             data['wall'] = self.last_walls_data
-
 
         data = self.validate_game_data(data)
         self.track_no_detections(data)
