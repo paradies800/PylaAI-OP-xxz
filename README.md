@@ -68,6 +68,14 @@ Recovery features :
 - If the Brawl Stars Idle Disconnect / Reload dialog appears, the bot presses Reload.
 - If the scrcpy video feed freezes, the bot restarts the scrcpy feed instead of repeatedly restarting Brawl Stars.
 
+Performance troubleshooting :
+- Run `python tools/performance_check.py`.
+- If it says `CPUExecutionProvider`, run `setup.exe` again or set `cfg/general_config.toml` `cpu_or_gpu = "directml"`.
+- On laptops with two GPUs, set Windows Graphics settings for `python.exe` and the emulator to High performance.
+- If DirectML is active but still very slow, try `directml_device_id = "1"` in `cfg/general_config.toml`, then restart the bot.
+- Turn off Windows Efficiency mode for the emulator if Task Manager shows it. Efficiency mode can cap emulator frame delivery and make the bot look stuck at 2-5 IPS.
+- Keep some free RAM. If memory is above about 85%, close Discord/browser/other games before running the bot.
+
 Notes :
 - This is the "localhost" version which means everything API related isn't enabled (login, online stats tracking, auto brawler list updating, auto icon updating, auto wall model updating). 
 You can make it "online" by changing the base api url in utils.py and recoding the app to answer to the different endpoints. Site's code might become opensource but currently isn't.

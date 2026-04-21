@@ -4,6 +4,7 @@ super_debug = "no"
 visual_debug = "no"
 wall_stuck_debug = "no"
 cpu_or_gpu = "auto"
+directml_device_id = "auto"
 max_ips = 24
 scrcpy_max_fps = 30
 onnx_cpu_threads = 4

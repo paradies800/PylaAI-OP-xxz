@@ -79,6 +79,7 @@ class Hub:
         self.general_config.setdefault("onnx_cpu_threads", "auto")
         self.general_config.setdefault("super_debug", "yes")
         self.general_config.setdefault("cpu_or_gpu", "auto")
+        self.general_config.setdefault("directml_device_id", "auto")
         self.general_config.setdefault("long_press_star_drop", "no")
         self.general_config.setdefault("trophies_multiplier", 1.0)
         self.general_config.setdefault("current_emulator", "LDPlayer")
@@ -715,10 +716,10 @@ class Hub:
         )
 
         # 4) CPU/GPU (store in general_config)
-        lbl_gpu = ctk.CTkLabel(container, text="Use GPU (CPU/Auto):", font=("Arial", S(18)))
+        lbl_gpu = ctk.CTkLabel(container, text="Inference device:", font=("Arial", S(18)))
         lbl_gpu.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))
 
-        gpu_values = ["cpu", "auto"]
+        gpu_values = ["auto", "directml", "cuda", "openvino", "cpu"]
         gpu_var = tk.StringVar(value=self.general_config["cpu_or_gpu"])
 
         def on_gpu_change(choice):
@@ -739,6 +740,14 @@ class Hub:
         )
         gpu_menu.grid(row=row_idx, column=1, padx=S(20), pady=S(10), sticky="w")
         row_idx += 1
+
+        create_labeled_entry(
+            label_text="DirectML GPU ID:",
+            config_key="directml_device_id",
+            convert_func=str,
+            use_general_config=True,
+            tooltip_text="DirectML adapter index. Keep auto unless DirectML uses the wrong GPU; try 0 or 1 on laptops with two GPUs."
+        )
 
         lbl_long_press = ctk.CTkLabel(container, text="Longpress star_drop:", font=("Arial", S(18)))
         lbl_long_press.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))

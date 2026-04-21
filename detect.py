@@ -1,4 +1,5 @@
 import os
+import platform
 import warnings
 
 import cv2
@@ -36,6 +37,17 @@ optimal_threads_amount = get_optimal_threads()
 _provider_message_printed = False
 
 
+def _directml_provider():
+    device_id = load_toml_as_dict("cfg/general_config.toml").get("directml_device_id", "auto")
+    if str(device_id).strip().lower() in ("", "auto", "none"):
+        return "DmlExecutionProvider"
+    try:
+        return ("DmlExecutionProvider", {"device_id": int(device_id)})
+    except (TypeError, ValueError):
+        print(f"Ignoring invalid directml_device_id={device_id!r}; using default DirectML adapter.")
+        return "DmlExecutionProvider"
+
+
 def _build_providers(preferred_device):
     global _provider_message_printed
     preferred_device = str(preferred_device or "auto").strip().lower()
@@ -53,7 +65,7 @@ def _build_providers(preferred_device):
 
     if preferred_device in ("gpu", "auto", "directml", "dml"):
         if "DmlExecutionProvider" in available_providers and not providers:
-            providers.append("DmlExecutionProvider")
+            providers.append(_directml_provider())
 
     if preferred_device in ("gpu", "auto", "openvino"):
         if "OpenVINOExecutionProvider" in available_providers and not providers:
@@ -67,9 +79,16 @@ def _build_providers(preferred_device):
     if not _provider_message_printed:
         selected = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
         if selected == "CPUExecutionProvider":
-            print(f"Using CPU inference. Available ONNX providers: {', '.join(ort.get_available_providers())}")
+            print(
+                f"Using CPU inference. Available ONNX providers: {', '.join(ort.get_available_providers())}. "
+                f"Python={platform.python_version()} {platform.architecture()[0]}."
+            )
         else:
-            print(f"Using {selected} for ONNX inference with CPU fallback.")
+            print(
+                f"Using {selected} for ONNX inference with CPU fallback. "
+                f"Available ONNX providers: {', '.join(ort.get_available_providers())}. "
+                f"Python={platform.python_version()} {platform.architecture()[0]}."
+            )
         _provider_message_printed = True
     return providers
 

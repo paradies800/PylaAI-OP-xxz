@@ -96,7 +96,13 @@ def setup_pyla():
     # NVIDIA BRANCH (Series 10-50)
     if target == "nvidia":
         print(f"\n NVIDIA: {name} detected.")
-        if ask_user("Install NVIDIA CUDA acceleration? (takes more storage but gives you more ips, about 2GB)"):
+        if os.environ.get("PYLAAI_SETUP_AUTO", "").strip().lower() in ("1", "true", "yes"):
+            print("\nAuto setup: installing DirectML GPU acceleration for NVIDIA Windows systems.")
+            install_onnxruntime_variant("onnxruntime-directml")
+            onnx_installed = True
+            status_pytorch = "DirectML Edition"
+            status_accel = "DirectML"
+        elif ask_user("Install NVIDIA CUDA acceleration? (takes more storage but gives you more ips, about 2GB)"):
             if ver >= 10.0: # 50-Series Blackwell
                 torch_cmd = ["--pre", "torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/nightly/cu128"]
                 status_accel = "CUDA 12.8 (Blackwell)"
