@@ -442,7 +442,7 @@ class Hub:
         row_ += 1
 
         # -----------------------------------------------------------------
-        # 4) Emulator Selection (3 rectangular buttons)
+        # 4) Emulator Selection
         # -----------------------------------------------------------------
         emulator_label = ctk.CTkLabel(container, text="Select Emulator:", font=("Arial", S(20), "bold"))
         emulator_label.grid(row=row_, column=0, columnspan=2, pady=S(10))
@@ -452,29 +452,35 @@ class Hub:
         self.emulator_frame.grid(row=row_, column=0, columnspan=2, pady=S(10))
         row_ += 1
 
-        self.emu_var = tk.StringVar(value=self.general_config["current_emulator"])  # default
-
-        emulator_ports = {
-            "BlueStacks": 5555,
+        supported_emulators = {
             "LDPlayer": 5555,
-            "MEmu": 21503,
             "MuMu": 16384,
-            "Others": 5555,
         }
 
+        def infer_supported_emulator(configured_port):
+            try:
+                configured_port = int(configured_port)
+            except (TypeError, ValueError):
+                return "LDPlayer"
+            if configured_port in (16384, 16416, 16448, 7555):
+                return "MuMu"
+            return "LDPlayer"
+
+        current_emulator = self.general_config.get("current_emulator", "LDPlayer")
+        if current_emulator not in supported_emulators:
+            current_emulator = infer_supported_emulator(self.general_config.get("emulator_port"))
+            self.general_config["current_emulator"] = current_emulator
+            self.general_config["emulator_port"] = supported_emulators[current_emulator]
+            save_dict_as_toml(self.general_config, self.general_config_path)
+
+        self.emu_var = tk.StringVar(value=current_emulator)
+
         def handle_emulator_choice(choice):
+            if choice not in supported_emulators:
+                choice = "LDPlayer"
             self.emu_var.set(choice)
-            if choice == "BlueStacks":
-                self.general_config["current_emulator"] = "BlueStacks"
-            elif choice == "LDPlayer":
-                self.general_config["current_emulator"] = "LDPlayer"
-            elif choice == "MEmu":
-                self.general_config["current_emulator"] = "MEmu"
-            elif choice == "MuMu":
-                self.general_config["current_emulator"] = "MuMu"
-            else:
-                self.general_config["current_emulator"] = "Others"
-            self.general_config["emulator_port"] = emulator_ports[self.general_config["current_emulator"]]
+            self.general_config["current_emulator"] = choice
+            self.general_config["emulator_port"] = supported_emulators[choice]
             save_dict_as_toml(self.general_config, self.general_config_path)
             refresh_emu_buttons()
 
@@ -494,16 +500,10 @@ class Hub:
             return btn
 
         self.btn_ldplayer = create_emu_button(self.emulator_frame, "LDPlayer")
-        self.btn_bluestacks = create_emu_button(self.emulator_frame, "BlueStacks")
-        self.btn_memu = create_emu_button(self.emulator_frame, "MEmu")
         self.btn_mumu = create_emu_button(self.emulator_frame, "MuMu")
-        self.btn_others = create_emu_button(self.emulator_frame, "Others")
 
         self.btn_ldplayer.grid(row=0, column=0, padx=S(10), pady=S(5))
-        self.btn_bluestacks.grid(row=0, column=1, padx=S(10), pady=S(5))
-        self.btn_memu.grid(row=0, column=2, padx=S(10), pady=S(5))
-        self.btn_mumu.grid(row=0, column=3, padx=S(10), pady=S(5))
-        self.btn_others.grid(row=0, column=4, padx=S(10), pady=S(5))
+        self.btn_mumu.grid(row=0, column=1, padx=S(10), pady=S(5))
 
         def refresh_emu_buttons():
             curr_emu = self.emu_var.get()
@@ -515,10 +515,7 @@ class Hub:
                     btn.configure(fg_color="#333333", hover_color="#BB3A3A")
 
             color(self.btn_ldplayer, "LDPlayer")
-            color(self.btn_bluestacks, "BlueStacks")
-            color(self.btn_memu, "MEmu")
             color(self.btn_mumu, "MuMu")
-            color(self.btn_others, "Others")
 
         refresh_emu_buttons()
 

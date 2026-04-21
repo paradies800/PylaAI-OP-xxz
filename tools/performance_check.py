@@ -23,7 +23,7 @@ def main():
     print(f"Configured directml_device_id: {cfg.get('directml_device_id', 'auto')}")
     print(f"Configured onnx_cpu_threads: {cfg.get('onnx_cpu_threads', 'auto')}")
     print(f"Configured max_ips: {cfg.get('max_ips', 'auto')}")
-    print(f"Configured emulator: {cfg.get('current_emulator', 'Others')} port={cfg.get('emulator_port', 'auto')}")
+    print(f"Configured emulator: {cfg.get('current_emulator', 'LDPlayer')} port={cfg.get('emulator_port', 'auto')}")
     print(f"Configured scrcpy_max_fps: {cfg.get('scrcpy_max_fps', 'default')}")
 
     model_path = ROOT / "models" / "mainInGameModel.onnx"
@@ -86,12 +86,13 @@ def main():
         print(f"scrcpy frame FPS: {frame_fps:.2f}")
         if frame_fps < 8:
             print("WARNING: Emulator/scrcpy is only delivering a few frames per second.")
-            print("This causes 1-2 IPS with low Python CPU usage. Fix LDPlayer/emulator settings first:")
+            emulator = cfg.get("current_emulator", "LDPlayer")
+            print(f"This causes 1-2 IPS with low Python CPU usage. Fix {emulator} settings first:")
             print("- Use Python 3.11 64-bit via Run PylaAI.bat, not 32-bit python.exe.")
             print("- Set emulator resolution to 1920x1080 landscape.")
             print("- Set emulator FPS to 60 and disable low-FPS/eco/power-saving mode.")
-            print("- Disable Windows Efficiency mode for LDPlayer and Python.")
-            print("- In cfg/general_config.toml set current_emulator = \"LDPlayer\" and emulator_port to the LDPlayer ADB port.")
+            print(f"- Disable Windows Efficiency mode for {emulator} and Python.")
+            print("- In cfg/general_config.toml choose either current_emulator = \"LDPlayer\" or \"MuMu\" and use that emulator's ADB port.")
         if stale_samples:
             print(f"WARNING: Saw {stale_samples} stale-frame samples during the frame test.")
     except Exception as exc:

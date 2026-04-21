@@ -201,8 +201,26 @@ class SelectBrawler:
     def get_adb_device_for_quick_select(self):
         general_config = load_toml_as_dict("cfg/general_config.toml")
         configured_port = general_config.get("emulator_port", 0)
+        selected_emulator = general_config.get("current_emulator", "LDPlayer")
         brawl_package = general_config.get("brawl_stars_package", "com.supercell.brawlstars").strip()
-        preferred_ports = [configured_port, 16384, 16416, 16448, 7555, 5558, 5555]
+        emulator_ports = {
+            "LDPlayer": [5555, 5557, 5559, 5554],
+            "MuMu": [16384, 16416, 16448, 7555, 5558, 5557, 5556, 5555, 5554],
+        }
+        if selected_emulator not in emulator_ports:
+            try:
+                configured_port_int = int(configured_port)
+            except (TypeError, ValueError):
+                configured_port_int = 0
+            selected_emulator = "MuMu" if configured_port_int in (16384, 16416, 16448, 7555) else "LDPlayer"
+        preferred_ports = []
+        for port in [configured_port] + emulator_ports[selected_emulator] + emulator_ports["LDPlayer"] + emulator_ports["MuMu"]:
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                continue
+            if port != 5037 and port not in preferred_ports:
+                preferred_ports.append(port)
         configured_ports = []
         try:
             configured_ports = [int(configured_port)]

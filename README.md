@@ -73,9 +73,11 @@ Recovery features :
 Performance troubleshooting :
 - Run `python tools/performance_check.py`.
 - If it says `CPUExecutionProvider`, run `setup.exe` again or set `cfg/general_config.toml` `cpu_or_gpu = "directml"`.
+- If the bot shows `1-2 IPS` while Python CPU usage is low, check the `scrcpy frame FPS` line from `tools/performance_check.py`. Low frame FPS means the emulator/ADB feed is slow, not the AI model.
 - On laptops with two GPUs, set Windows Graphics settings for `python.exe` and the emulator to High performance.
 - If DirectML is active but still very slow, try `directml_device_id = "1"` in `cfg/general_config.toml`, then restart the bot.
 - Turn off Windows Efficiency mode for the emulator if Task Manager shows it. Efficiency mode can cap emulator frame delivery and make the bot look stuck at 2-5 IPS.
+- For LDPlayer or MuMu, select the matching emulator in the hub or set `current_emulator = "LDPlayer"` / `"MuMu"` in `cfg/general_config.toml`, use 1920x1080 landscape, set emulator FPS to 60, and disable any low-FPS/eco mode.
 - Keep some free RAM. If memory is above about 85%, close Discord/browser/other games before running the bot.
 - Enable `Debug Screen` in Additional Settings to open a live vision overlay while the bot runs. It shows player, teammate, enemy, wall, fog, and range overlays.
 

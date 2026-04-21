@@ -33,12 +33,21 @@ directions_xy_deltas_dict = {
 BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml")["brawl_stars_package"]
 
 EMULATOR_PORTS = {
-    "BlueStacks": [5555, 5556, 5557, 5565],
     "LDPlayer": [5555, 5557, 5559, 5554],
-    "MEmu": [21503, 21513, 21523, 5555],
     "MuMu": [16384, 16416, 16448, 7555, 5558, 5557, 5556, 5555, 5554],
-    "Others": [5555, 5558, 7555, 16384, 16416, 16448, 21503, 5635],
 }
+
+SUPPORTED_EMULATORS = tuple(EMULATOR_PORTS.keys())
+
+
+def _infer_supported_emulator(configured_port):
+    try:
+        configured_port = int(configured_port)
+    except (TypeError, ValueError):
+        return "LDPlayer"
+    if configured_port in (16384, 16416, 16448, 7555):
+        return "MuMu"
+    return "LDPlayer"
 
 
 def _unique_ports(ports):
@@ -139,15 +148,22 @@ class WindowController:
                 return best_device, best_package
 
             general_config = load_toml_as_dict("cfg/general_config.toml")
-            selected_emulator = general_config.get("current_emulator", "Others")
+            selected_emulator = general_config.get("current_emulator", "LDPlayer")
             configured_port = general_config.get("emulator_port", 0)
+            if selected_emulator not in EMULATOR_PORTS:
+                inferred_emulator = _infer_supported_emulator(configured_port)
+                print(f"Unsupported emulator '{selected_emulator}' in config; using {inferred_emulator}.")
+                selected_emulator = inferred_emulator
             self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 15))
             if self.scrcpy_max_fps <= 0:
                 self.scrcpy_max_fps = None
+            all_supported_ports = []
+            for emulator_name in SUPPORTED_EMULATORS:
+                all_supported_ports.extend(EMULATOR_PORTS[emulator_name])
             candidate_ports = _unique_ports(
                 [configured_port]
-                + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"])
-                + EMULATOR_PORTS["Others"]
+                + EMULATOR_PORTS[selected_emulator]
+                + all_supported_ports
                 + list(range(5565, 5756, 10))
             )
 
@@ -155,10 +171,8 @@ class WindowController:
             preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
 
             # Probe selected/common emulator ports quickly before calling adb.connect.
-            # If nothing is online yet, fall back to the full candidate list so
-            # generic "Others" setups still have a chance. Port 5037 is filtered
-            # out by _unique_ports because it is the ADB server port.
-            if not preferred_devices and (selected_emulator != "Others" or not device_list):
+            # Port 5037 is filtered out by _unique_ports because it is the ADB server port.
+            if not preferred_devices:
                 ports_to_try = [port for port in candidate_ports if _is_port_open("127.0.0.1", port)]
                 if not ports_to_try and not device_list:
                     ports_to_try = candidate_ports
@@ -178,10 +192,10 @@ class WindowController:
             selected_is_preferred = self.device in preferred_devices
             if opened_package == BRAWL_STARS_PACKAGE.strip():
                 print(f"Selected ADB device with Brawl Stars in foreground: {self.device.serial}")
-            if selected_emulator != "Others" and not selected_is_preferred:
+            if not selected_is_preferred:
                 print(
                     f"Could not identify a {selected_emulator} device by port; "
-                    f"using best online ADB device instead."
+                    f"using the best online LDPlayer/MuMu ADB device instead."
                 )
             print(f"Connected to {selected_emulator}: {self.device.serial}")
 
