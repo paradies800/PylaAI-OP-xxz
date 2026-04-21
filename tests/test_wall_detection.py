@@ -9,7 +9,7 @@ class TestWallDetectionPostprocess(unittest.TestCase):
         play.wall_box_min_size = 20
         play.wall_box_merge_iou = 0.25
         play.wall_box_merge_center_distance = 35
-        play.wall_history_min_hits = 1
+        play.wall_history_min_hits = 2
         play.wall_history = []
         return play
 
@@ -39,6 +39,17 @@ class TestWallDetectionPostprocess(unittest.TestCase):
         combined = play.combine_walls_from_history()
 
         self.assertEqual(len(combined), 2)
+
+    def test_current_frame_walls_are_kept_before_history_votes(self):
+        play = self.make_play()
+        play.wall_history = [
+            [[100, 100, 160, 160]],
+            [[400, 400, 460, 460]],
+        ]
+
+        combined = play.combine_walls_from_history()
+
+        self.assertTrue(any(box[0] == 400 and box[1] == 400 for box in combined))
 
 
 if __name__ == "__main__":

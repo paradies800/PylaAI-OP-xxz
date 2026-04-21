@@ -1195,8 +1195,12 @@ class Play(Movement):
         return combined_walls
 
     def combine_walls_from_history(self):
+        if not self.wall_history:
+            return []
+        current_walls = self.wall_history[-1]
         historical_walls = [wall for walls in self.wall_history for wall in walls]
-        return self.merge_wall_boxes(historical_walls, min_hits=max(1, self.wall_history_min_hits))
+        stable_history = self.merge_wall_boxes(historical_walls, min_hits=max(2, self.wall_history_min_hits))
+        return self.merge_wall_boxes(current_walls + stable_history)
 
     def get_movement(self, player_data, enemy_data, walls, brawler):
         brawler_info = self.brawlers_info.get(brawler)
