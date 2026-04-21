@@ -35,7 +35,7 @@ class SelectBrawler:
         square_size = int(75 * scale_factor)
         amount_of_rows = ceil(len(brawlers)/10) + 1
         necessary_height = (int(145 * scale_factor) + amount_of_rows*square_size + (amount_of_rows-1)*int(3 * scale_factor))
-        self.app.title(f"PylaAI v{pyla_version}")
+        self.app.title(f"pylaai-op-xxz v{pyla_version}")
         self.brawlers = brawlers
 
         self.app.geometry(f"{str(int(860 * scale_factor))}x{necessary_height}+{str(int(600 * scale_factor))}")

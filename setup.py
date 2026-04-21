@@ -5,7 +5,7 @@ import os
 
 if platform.system() != "Windows" or "microsoft" in platform.uname()[3].lower():
     print("\n" + "!"*50)
-    print("  ERROR: This version of PylaAI is for WINDOWS ONLY.")
+    print("  ERROR: This version of pylaai-op-xxz is for WINDOWS ONLY.")
     print("  Mac or Linux detected. Please use the Universal branch.")
     print("!"*50 + "\n")
     sys.exit(1)
@@ -71,7 +71,7 @@ def ask_user(prompt_text):
     return response in ['y', 'yes']
 
 def setup_pyla():
-    print("\n" + "="*50 + "\n   PylaAi - Windows Setup   \n" + "="*50)
+    print("\n" + "="*50 + "\n   pylaai-op-xxz - Windows Setup   \n" + "="*50)
     
     # installing must have Pytorch CPU
     force_install(["torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cpu"])
@@ -169,7 +169,7 @@ def setup_pyla():
     print("="*50 + "\n")
 
 setup(
-    name="PylaAI", version="1.0.0",
+    name="pylaai-op-xxz", version="1.0.0",
     packages=find_packages(exclude=["api", "cfg", "models", "typization"]),
     install_requires=[]
 )

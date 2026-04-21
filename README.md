@@ -1,4 +1,4 @@
-# PylaAI — Showdown Fork
+# pylaai-op-xxz
 
 This fork focuses on **Showdown** (trio). Other game modes still run off the upstream logic, but development effort and tuning here go into making Showdown play well end-to-end.
 
@@ -32,7 +32,7 @@ For normal users, you only need `setup.exe`.
 5. Start your Android emulator.
 6. Open Brawl Stars in the emulator.
 7. Set the emulator resolution to `1920x1080` for best results.
-8. Double-click `Run PylaAI.bat` or run `python main.py`.
+8. Double-click `Run pylaai-op-xxz.bat` or run `python main.py`.
 9. In the hub, choose your emulator, select your brawler setup, then press Start.
 
 Manual developer setup:

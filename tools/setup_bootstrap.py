@@ -102,7 +102,7 @@ def install_python():
 
 def create_run_file(project_dir, python_command):
     python_invocation = " ".join(f'"{part}"' if " " in part else part for part in python_command)
-    run_bat = project_dir / "Run PylaAI.bat"
+    run_bat = project_dir / "Run pylaai-op-xxz.bat"
     run_bat.write_text(
         "@echo off\n"
         "cd /d %~dp0\n"
@@ -118,7 +118,7 @@ def main():
     setup_py = project_dir / "setup.py"
     main_py = project_dir / "main.py"
     if not setup_py.exists() or not main_py.exists():
-        print("setup.exe must be placed in the PylaAI project folder next to setup.py and main.py.")
+        print("setup.exe must be placed in the pylaai-op-xxz project folder next to setup.py and main.py.")
         input("Press Enter to close...")
         return 1
 
@@ -145,8 +145,8 @@ def main():
     create_run_file(project_dir, python_command)
 
     print("")
-    print("PylaAI setup completed.")
-    print("Start your emulator, open Brawl Stars, then run Run PylaAI.bat or python main.py.")
+    print("pylaai-op-xxz setup completed.")
+    print("Start your emulator, open Brawl Stars, then run Run pylaai-op-xxz.bat or python main.py.")
     input("Press Enter to close...")
     return 0
 
