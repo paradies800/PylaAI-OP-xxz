@@ -1,4 +1,6 @@
 import asyncio
+import platform
+import sys
 import time
 
 import cv2
@@ -33,6 +35,11 @@ from utils import (
     update_wall_model_classes,
 )
 from window_controller import WindowController
+
+if platform.architecture()[0] != "64bit":
+    print("\nWARNING: PylaAI is running on 32-bit Python.")
+    print("If IPS is very low, run python tools/performance_check.py to verify ONNX and emulator frame speed.")
+    print(f"Current Python: {sys.executable}")
 
 pyla_version = load_toml_as_dict("./cfg/general_config.toml")['pyla_version']
 
@@ -72,6 +79,8 @@ def pyla_main(data):
             self.in_cooldown = False
             self.cooldown_start_time = 0
             self.cooldown_duration = 3 * 60
+            self.match_ready_at = 0.0
+            self.match_warmup_seconds = float(load_toml_as_dict("cfg/bot_config.toml").get("match_warmup_seconds", 4.0))
             self.last_stale_feed_recovery = 0.0
             self.stale_feed_recovery_attempts = 0
             self.last_stale_feed_message = 0.0
@@ -79,6 +88,7 @@ def pyla_main(data):
             self.disconnect_reload_attempts = 0
             self.last_processed_frame_id = -1
             self.ips_ema = None
+            self.low_frame_fps_warning_time = 0.0
             self.disconnect_ocr_interval = 6.0
             self.control_window = RuntimeControlWindow()
             self.control_window.start()
@@ -132,6 +142,7 @@ def pyla_main(data):
                     self.Play.reset_match_control_state()
                 elif previous_state != "match" and state == "match":
                     self.Play.reset_match_control_state()
+                    self.match_ready_at = time.time() + self.match_warmup_seconds
                 frame_data = None
                 self.Stage_manager.do_state(state, frame_data)
 
@@ -264,6 +275,15 @@ def pyla_main(data):
                         current_ips = c / elapsed
                         self.ips_ema = current_ips if self.ips_ema is None else (self.ips_ema * 0.75 + current_ips * 0.25)
                         print(f"{self.ips_ema:.2f} IPS")
+                        if self.ips_ema < 3 and time.time() - self.low_frame_fps_warning_time > 20:
+                            _, last_frame_time = self.window_controller.get_latest_frame()
+                            frame_age = time.time() - last_frame_time if last_frame_time else 0
+                            print(
+                                "Low IPS with low CPU usually means the emulator/scrcpy feed is slow. "
+                                f"Latest frame age: {frame_age:.1f}s. "
+                                "Run: python tools/performance_check.py"
+                            )
+                            self.low_frame_fps_warning_time = time.time()
                     s_time = time.time()
                     c = 0
 
@@ -289,6 +309,10 @@ def pyla_main(data):
 
                 self.manage_time_tasks(frame)
 
+                if self.state == "match" and time.time() < self.match_ready_at:
+                    self.window_controller.keys_up(list("wasd"))
+                    time.sleep(0.05)
+                    continue
 
                 brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                 self.Play.main(frame, brawler, self)
