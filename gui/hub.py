@@ -1,5 +1,3 @@
-import sys
-
 import customtkinter as ctk
 import webbrowser
 import os
@@ -1162,23 +1160,6 @@ class Hub:
     #  On Start => close window + callback
     # ---------------------------------------------------------------------------------------------
     def _on_start(self):
-        sys.stdout.flush()
-        o_out, o_err = sys.stdout, sys.stderr
-        fd_out, fd_err = o_out.fileno(), o_err.fileno()
-        saved_out, saved_err = os.dup(fd_out), os.dup(fd_err)
-        dn = os.open(os.devnull, os.O_RDWR)
-        os.dup2(dn, fd_out); os.dup2(dn, fd_err); os.close(dn)
-
-        tkint = getattr(getattr(self, 'app', None), 'tk', None)
-        renamed = False
-        if tkint:
-            try:
-                if tkint.eval('info procs ::bgerror'):
-                    tkint.eval('rename ::bgerror ::_old_bgerr'); renamed = True
-                tkint.eval('proc ::bgerror args {}')
-            except tk.TclError:
-                pass
-
         try:
             for after_id in self.app.tk.call("after", "info"):
                 try:
@@ -1187,17 +1168,19 @@ class Hub:
                     pass
         except Exception:
             pass
-        try: self.app.destroy()
-        except Exception: pass
-        os.dup2(saved_out, fd_out); os.dup2(saved_err, fd_err)
-        os.close(saved_out); os.close(saved_err)
-        sys.stdout, sys.stderr = o_out, o_err
-
-        if tkint:
-            try:
-                tkint.eval('rename ::bgerror {}')
-                if renamed: tkint.eval('rename ::_old_bgerr ::bgerror')
-            except tk.TclError: pass
+        try:
+            self.app.withdraw()
+            self.app.update_idletasks()
+        except Exception:
+            pass
+        try:
+            self.app.quit()
+        except Exception:
+            pass
+        try:
+            self.app.destroy()
+        except Exception:
+            pass
 
         if callable(self.on_close_callback):
             self.on_close_callback()
