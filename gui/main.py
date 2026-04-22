@@ -57,6 +57,7 @@ class App:
                 self.hub_menu(pyla_version, pyla_version)
             else:
                 self.hub_menu(pyla_version, get_latest_version())
+            utils.clear_toml_cache()
             self.select_brawler(self.set_data, self.brawlers)
             gc.collect()
             if self.brawler_data:

@@ -30,6 +30,8 @@ def load_brawler():
 def main():
     parser = argparse.ArgumentParser(description="Run a short live wall-detection test.")
     parser.add_argument("--seconds", type=int, default=180)
+    parser.add_argument("--rounds", type=int, default=0, help="Stop after this many completed rounds. 0 disables round counting.")
+    parser.add_argument("--visual-debug", action="store_true", help="Show the live Pyla Visual Debug overlay window.")
     parser.add_argument("--brawler", default=None)
     args = parser.parse_args()
 
@@ -47,6 +49,10 @@ def main():
     last_state = None
     wall_counts = []
     raw_wall_counts = []
+    last_continue_press = 0.0
+    continue_interval = 0.35
+    completed_rounds = 0
+    active_end_state = None
 
     try:
         while time.time() - start < args.seconds:
@@ -62,10 +68,26 @@ def main():
                 print(f"State: {current_state}")
                 last_state = current_state
 
+            if current_state.startswith("end_"):
+                if current_state != active_end_state:
+                    completed_rounds += 1
+                    active_end_state = current_state
+                    print(f"Completed round {completed_rounds}/{args.rounds or '?'}: {current_state}")
+                    if args.rounds and completed_rounds >= args.rounds:
+                        break
+            elif current_state == "match":
+                active_end_state = None
+
             if current_state == "lobby":
                 print("state is lobby, starting game")
                 controller.press_key("Q")
                 time.sleep(1)
+                continue
+            if current_state != "match":
+                now = time.time()
+                if now - last_continue_press > continue_interval:
+                    controller.press_key("Q")
+                    last_continue_press = now
                 continue
 
             if current_state == "match":
@@ -82,6 +104,8 @@ def main():
                     play.time_since_player_last_found = time.time()
                     play.current_frame = frame
                     play.loop(brawler, data, time.time())
+                    if args.visual_debug:
+                        play.show_visual_debug(frame, data, brawler)
                 elif time.time() - play.time_since_player_last_found > 1.0:
                     controller.keys_up(list("wasd"))
 

@@ -31,14 +31,17 @@ class SelectBrawler:
 
     def __init__(self, data_setter, brawlers):
         self.app = ctk.CTk()
+        tk._default_root = self.app
 
         square_size = int(75 * scale_factor)
         amount_of_rows = ceil(len(brawlers)/10) + 1
         necessary_height = (int(145 * scale_factor) + amount_of_rows*square_size + (amount_of_rows-1)*int(3 * scale_factor))
+        window_height = min(necessary_height, int(820 * scale_factor))
+        image_frame_height = max(int(240 * scale_factor), window_height - int(190 * scale_factor))
         self.app.title(f"pylaai-op-xxz v{pyla_version}")
         self.brawlers = brawlers
 
-        self.app.geometry(f"{str(int(860 * scale_factor))}x{necessary_height}+{str(int(600 * scale_factor))}")
+        self.app.geometry(f"{str(int(860 * scale_factor))}x{window_height}+{str(int(600 * scale_factor))}")
         self.data_setter = data_setter
         self.colors = {
             'gray': "#7d7777",
@@ -57,10 +60,14 @@ class SelectBrawler:
 
 
         self.images = []
+        self.visible_image_labels = []
         self.brawlers_data = []
         self.farm_type = ""
         self.api_trophies_by_brawler = None
         self.api_trophy_error_reported = False
+        api_trophies = self.get_api_trophies_by_brawler()
+        if api_trophies:
+            self.brawlers = [brawler for brawler in self.brawlers if brawler in api_trophies]
 
         for brawler in self.brawlers:
             img_path = f"./api/assets/brawler_icons/{brawler}.png"
@@ -86,20 +93,25 @@ class SelectBrawler:
         self.filter_var.trace_add("write", lambda *args: self.update_images(self.filter_var.get()))
 
         # Frame to hold the images
-        self.image_frame = ctk.CTkFrame(self.app, fg_color=self.colors['ui box gray'])
+        self.image_frame = ctk.CTkScrollableFrame(
+            self.app,
+            fg_color=self.colors['ui box gray'],
+            width=int(845 * scale_factor),
+            height=image_frame_height,
+        )
         self.image_frame.place(x=0, y=int(100 * scale_factor))
 
         self.update_images("")
         ctk.CTkButton(self.app, text="Start", command=self.start_bot, fg_color=self.colors['ui box gray'],
                       text_color="white",
                       font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
-                      border_width=int(2 * scale_factor)).place(x=int(390 * scale_factor), y=int((necessary_height-60* scale_factor) ))
+                      border_width=int(2 * scale_factor)).place(x=int(390 * scale_factor), y=int((window_height-60* scale_factor) ))
 
         ctk.CTkButton(self.app, text="Push All 1k", command=self.push_all_1k, fg_color=self.colors['ui box gray'],
                       text_color="white",
                       font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
                       border_width=int(2 * scale_factor)).place(x=int(10 * scale_factor),
-                                                                y=int((necessary_height-60* scale_factor) ))
+                                                                y=int((window_height-60* scale_factor) ))
 
         self.timer_var = tk.StringVar()
         self.timer_entry = ctk.CTkEntry(
@@ -108,12 +120,12 @@ class SelectBrawler:
             fg_color=self.colors['ui box gray'], border_color=self.colors['cherry red'], text_color="white"
         )
         ctk.CTkLabel(self.app, text="Run for :", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 580), y=int((necessary_height-55* scale_factor) ))
-        self.timer_entry.place(x=int(scale_factor * 675), y=int((necessary_height-55* scale_factor) ))
+                     text_color="white").place(x=int(scale_factor * 580), y=int((window_height-55* scale_factor) ))
+        self.timer_entry.place(x=int(scale_factor * 675), y=int((window_height-55* scale_factor) ))
         self.timer_var.set(load_toml_as_dict("cfg/general_config.toml")["run_for_minutes"])
         self.timer_var.trace_add("write", lambda *args: self.update_timer(self.timer_var.get()))
         ctk.CTkLabel(self.app, text="minutes", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 760), y=int((necessary_height-55* scale_factor) ))
+                     text_color="white").place(x=int(scale_factor * 760), y=int((window_height-55* scale_factor) ))
 
         self.app.mainloop()
 
@@ -337,6 +349,9 @@ class SelectBrawler:
         config_path = "cfg/brawl_stars_api.toml"
         try:
             api_config = load_brawl_stars_api_config(config_path)
+            if not api_config.get("api_token") or not api_config.get("player_tag"):
+                self.api_trophies_by_brawler = {}
+                return self.api_trophies_by_brawler
             player_data = fetch_brawl_stars_player(
                 api_config.get("api_token", "").strip(),
                 api_config.get("player_tag", "").strip(),
@@ -562,6 +577,7 @@ class SelectBrawler:
 
 
     def update_images(self, filter_text):
+        self.visible_image_labels = []
         for widget in self.image_frame.winfo_children():
             widget.destroy()
 
@@ -571,6 +587,8 @@ class SelectBrawler:
         for brawler, img_tk in self.images:
             if brawler.startswith(filter_text.lower()):
                 label = ctk.CTkLabel(self.image_frame, image=img_tk, text="")
+                label._pyla_image_ref = img_tk
+                self.visible_image_labels.append(label)
                 label.bind("<Button-1>", lambda e, b=brawler: self.on_image_click(b))  # Bind click event
                 label.grid(row=row_num, column=col_num, padx=int(5 * scale_factor), pady=int(3 * scale_factor))
 

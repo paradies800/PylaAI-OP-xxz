@@ -154,6 +154,12 @@ def load_toml_as_dict(file_path):
             cached_toml[file_path] = {}
     return cached_toml[file_path]
 
+def clear_toml_cache(file_path=None):
+    if file_path is None:
+        cached_toml.clear()
+    else:
+        cached_toml.pop(file_path, None)
+
 def save_dict_as_toml(data, file_path):
     with open(file_path, 'w') as f:
         toml.dump(data, f)
@@ -250,12 +256,17 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
 def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
     try:
         config = load_toml_as_dict(file_path)
+        if not str(config.get("player_tag", "")).strip():
+            config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
         return refresh_brawl_stars_api_token_if_enabled(config, file_path)
     except toml.TomlDecodeError:
         pass
 
     if not os.path.exists(file_path):
-        return {}
+        return {
+            "player_tag": str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip(),
+            "timeout_seconds": 15,
+        }
 
     with open(file_path, "r", encoding="utf-8-sig") as f:
         text = f.read()
@@ -268,6 +279,8 @@ def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
     tag_match = re.search(r'player_tag\s*=\s*"([^"]*)"', text)
     if tag_match:
         config["player_tag"] = tag_match.group(1).strip()
+    else:
+        config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
 
     timeout_match = re.search(r"timeout_seconds\s*=\s*(\d+)", text)
     if timeout_match:
@@ -358,7 +371,7 @@ def save_brawler_icon(brawler_name):
     # Clean the brawler name for filename
     brawler_name_clean = brawler_name.lower().replace(' ', '').replace('-', '').replace('.', '').replace('&',
                                                                                                          '')
-    brawlers_url = "https://api.brawlapi.com/v1/brawlers"
+    brawlers_url = "https://api.brawlify.com/v1/brawlers"
     response = requests.get(brawlers_url)
     if response.status_code != 200:
         print(f"Failed to fetch brawlers from API: {response.status_code}")
@@ -375,7 +388,8 @@ def save_brawler_icon(brawler_name):
             img_response = requests.get(icon_url)
             if img_response.status_code == 200:
                 image = Image.open(BytesIO(img_response.content))
-                image.save(f"api/assets/brawler_icons/{brawler_name_clean}.png")
+                safe_name = os.path.basename(brawler_name_clean).replace('.', '').replace('/', '').replace('\\', '')
+                image.save(f"api/assets/brawler_icons/{safe_name}.png")
                 print(f"Saved icon for brawler '{brawler_name}'")
             else:
                 print(f"Failed to download icon for '{brawler_name}'")
@@ -405,38 +419,101 @@ def check_version():
             print("Error, couldn't get the version, please check your internet connection or go ask for help in the discord.")
 
 
+_webhook_match_count = 0
+_webhook_last_minute_ping = 0.0
+
+
+def _load_webhook_settings():
+    general_config = load_toml_as_dict("cfg/general_config.toml")
+    webhook_config = dict(load_toml_as_dict("cfg/webhook_config.toml"))
+    webhook_config["webhook_url"] = str(
+        webhook_config.get("webhook_url") or general_config.get("personal_webhook", "")
+    ).strip()
+    webhook_config["discord_id"] = str(
+        webhook_config.get("discord_id") or general_config.get("discord_id", "")
+    ).strip()
+    webhook_config.setdefault("ping_when_stuck", False)
+    webhook_config.setdefault("ping_when_target_is_reached", False)
+    webhook_config.setdefault("ping_every_x_match", 0)
+    webhook_config.setdefault("ping_every_x_minutes", 0)
+    return webhook_config
+
+
+def _webhook_ping_content(message_type, settings):
+    global _webhook_match_count, _webhook_last_minute_ping
+    user_id = settings.get("discord_id", "")
+    if not user_id:
+        return ""
+
+    should_ping = False
+    if message_type == "bot_is_stuck":
+        should_ping = _config_bool(settings.get("ping_when_stuck"), False)
+    elif message_type == "completed" or (message_type is not None and message_type != "match"):
+        should_ping = _config_bool(settings.get("ping_when_target_is_reached"), False)
+
+    try:
+        every_matches = int(settings.get("ping_every_x_match", 0))
+    except (TypeError, ValueError):
+        every_matches = 0
+    if message_type == "match" and every_matches > 0:
+        _webhook_match_count += 1
+        should_ping = should_ping or (_webhook_match_count % every_matches == 0)
+
+    try:
+        every_minutes = float(settings.get("ping_every_x_minutes", 0))
+    except (TypeError, ValueError):
+        every_minutes = 0
+    if every_minutes > 0:
+        now = time.time()
+        if now - _webhook_last_minute_ping >= every_minutes * 60:
+            _webhook_last_minute_ping = now
+            should_ping = True
+
+    return f"<@{user_id}>" if should_ping else ""
+
+
 async def async_notify_user(message_type: str | None = None, screenshot: Image = None) -> None:
-    user_id = load_toml_as_dict("cfg/general_config.toml")["discord_id"]
-    webhook_url = load_toml_as_dict("cfg/general_config.toml")["personal_webhook"]
+    webhook_settings = _load_webhook_settings()
+    webhook_url = webhook_settings["webhook_url"]
     if not webhook_url:
         print("Couldn't notify: no webhook configured.")
         return
 
     if message_type == "completed":
         status_line = f"Pyla has completed all its targets!"
-        ping = f"<@{user_id}>"
     elif message_type == "bot_is_stuck":
         status_line = f"Your bot is currently stuck, attempted to restart brawl stars !"
-        ping = f"<@{user_id}>"
+    elif message_type == "match":
+        status_line = "Pyla finished a match."
     else:
         status_line = f"Pyla completed brawler goal for {message_type}!"
-        ping = f"<@{user_id}>"
+    ping = _webhook_ping_content(message_type, webhook_settings)
+    if message_type == "match" and not ping:
+        return
 
-    screenshot = Image.fromarray(screenshot)
-    buffer = io.BytesIO()
-    screenshot.save(buffer, format="PNG")
-    buffer.seek(0)
-    file = discord.File(buffer, filename="screenshot.png")
-
-    # Build the embed that holds both the text and the screenshot
     embed = discord.Embed(description=status_line)
-    embed.set_image(url="attachment://screenshot.png")   # show the attached screenshot
+    file = None
+    if screenshot is not None:
+        screenshot = Image.fromarray(screenshot)
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format="PNG")
+        buffer.seek(0)
+        file = discord.File(buffer, filename="screenshot.png")
+        embed.set_image(url="attachment://screenshot.png")
 
     # Send the embed
     async with aiohttp.ClientSession() as session:
         webhook = Webhook.from_url(webhook_url, session=session)
         print("sending webhook")
-        await webhook.send(embed=embed, file=file, username="Pyla notifier", content=ping)
+        send_kwargs = {
+            "embed": embed,
+            "username": "Pyla notifier",
+        }
+        if file is not None:
+            send_kwargs["file"] = file
+        if ping:
+            send_kwargs["content"] = ping
+        await webhook.send(**send_kwargs)
         
 def get_discord_link():
     if api_base_url == "localhost":

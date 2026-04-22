@@ -81,6 +81,21 @@ Performance troubleshooting :
 - Keep some free RAM. If memory is above about 85%, close Discord/browser/other games before running the bot.
 - Enable `Debug Screen` in Additional Settings to open a live vision overlay while the bot runs. It shows player, teammate, enemy, wall, fog, and range overlays.
 
+Wall model improvement :
+- The active wall/bush model is `models/tileDetector.onnx`.
+- Capture wall-model frames:
+  `python tools/capture_wall_samples.py --seconds 300 --start-match`
+- Build the wall YOLO dataset:
+  `python tools/create_wall_dataset.py`
+- Label the images in YOLO format with:
+  `0 wall`
+  `1 bush`
+  `2 close_bush`
+- Train/export on GPU:
+  `python tools/train_wall_model.py --device 0`
+- After testing, install the exported wall model:
+  `python tools/install_vision_model.py --source runs/wall_train/pylaai_wall/weights/best.onnx --target models/tileDetector.onnx`
+
 Notes :
 - This is the "localhost" version which means everything API related isn't enabled (login, online stats tracking, auto brawler list updating, auto icon updating, auto wall model updating). 
 You can make it "online" by changing the base api url in utils.py and recoding the app to answer to the different endpoints. Site's code might become opensource but currently isn't.

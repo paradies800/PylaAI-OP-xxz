@@ -68,6 +68,19 @@ showdown_place_templates = {
 SHOWDOWN_PLACE_THRESHOLD = 0.95
 
 
+def refresh_runtime_config():
+    global region_data, super_debug, crop_region, _current_gamemode
+    lobby_config = load_toml_as_dict("./cfg/lobby_config.toml")
+    general_config = load_toml_as_dict("./cfg/general_config.toml")
+    bot_config = load_toml_as_dict("./cfg/bot_config.toml")
+    region_data = lobby_config['template_matching']
+    crop_region = lobby_config['lobby']['trophy_observer']
+    super_debug = str(general_config.get("super_debug", "no")).lower() in ("yes", "true", "1")
+    _current_gamemode = bot_config.get("gamemode", "")
+    if super_debug and not os.path.exists("./debug_frames/"):
+        os.makedirs("./debug_frames/")
+
+
 def find_game_result(screenshot):
     if _current_gamemode == "showdown":
         for place, template_files in showdown_place_templates.items():
@@ -159,6 +172,7 @@ def is_in_star_drop(image):
 
 def get_state(screenshot):
     global _last_printed_state
+    refresh_runtime_config()
     screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
     if super_debug: cv2.imwrite(f"./debug_frames/state_screenshot_{len(os.listdir('./debug_frames'))}.png", screenshot_bgr)
     state = get_in_game_state(screenshot_bgr)

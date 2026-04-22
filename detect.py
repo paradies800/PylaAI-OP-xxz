@@ -18,14 +18,15 @@ debug = load_toml_as_dict("cfg/general_config.toml")["super_debug"] == "yes"
 
 
 def get_optimal_threads(max_limit=4):
-    configured_threads = load_toml_as_dict("cfg/general_config.toml").get("onnx_cpu_threads", "auto")
+    general_config = load_toml_as_dict("cfg/general_config.toml")
+    configured_threads = general_config.get("used_threads", general_config.get("onnx_cpu_threads", "auto"))
     if str(configured_threads).strip().lower() != "auto":
         try:
             threads_amount = max(1, int(configured_threads))
             print(f"Using configured ONNX CPU threads: {threads_amount}.")
             return threads_amount
         except (TypeError, ValueError):
-            pass
+            print(f"Ignoring invalid used_threads={configured_threads!r}; falling back to auto.")
 
     threads = os.cpu_count() or 2
     threads_amount = min(max(2, threads // 2), max_limit)
@@ -33,7 +34,6 @@ def get_optimal_threads(max_limit=4):
     return threads_amount
 
 
-optimal_threads_amount = get_optimal_threads()
 _provider_message_printed = False
 
 
@@ -199,6 +199,7 @@ class Detect:
         so.add_session_config_entry("session.intra_op.allow_spinning", "0")
         providers = _build_providers(self.preferred_device)
         first_provider = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        optimal_threads_amount = get_optimal_threads()
         if first_provider == "CPUExecutionProvider":
             so.intra_op_num_threads = optimal_threads_amount
             so.inter_op_num_threads = max(1, min(2, optimal_threads_amount))

@@ -136,7 +136,7 @@ class WindowController:
                     except Exception:
                         opened_package = ""
                     score = (
-                        opened_package == BRAWL_STARS_PACKAGE.strip(),
+                        opened_package == self.brawl_stars_package,
                         port == configured_port or dev.serial == configured_serial,
                         port in preferred_ports or dev.serial in preferred_serials,
                         -index,
@@ -150,6 +150,9 @@ class WindowController:
             general_config = load_toml_as_dict("cfg/general_config.toml")
             selected_emulator = general_config.get("current_emulator", "LDPlayer")
             configured_port = general_config.get("emulator_port", 0)
+            self.brawl_stars_package = str(
+                general_config.get("brawl_stars_package", BRAWL_STARS_PACKAGE)
+            ).strip()
             if selected_emulator not in EMULATOR_PORTS:
                 inferred_emulator = _infer_supported_emulator(configured_port)
                 print(f"Unsupported emulator '{selected_emulator}' in config; using {inferred_emulator}.")
@@ -190,7 +193,7 @@ class WindowController:
 
             self.device, opened_package = choose_best_device(device_list, selected_emulator, configured_port)
             selected_is_preferred = self.device in preferred_devices
-            if opened_package == BRAWL_STARS_PACKAGE.strip():
+            if opened_package == self.brawl_stars_package:
                 print(f"Selected ADB device with Brawl Stars in foreground: {self.device.serial}")
             if not selected_is_preferred:
                 print(
@@ -276,9 +279,9 @@ class WindowController:
             return self.frame_id
 
     def restart_brawl_stars(self):
-        self.device.app_stop(BRAWL_STARS_PACKAGE)
+        self.device.app_stop(self.brawl_stars_package)
         time.sleep(1)
-        self.device.app_start(BRAWL_STARS_PACKAGE)
+        self.device.app_start(self.brawl_stars_package)
         time.sleep(3)
         self.time_since_checked_if_brawl_stars_crashed = time.time()
         print("Brawl stars restarted successfully.")
@@ -287,9 +290,9 @@ class WindowController:
         c_time = time.time()
         if c_time - self.time_since_checked_if_brawl_stars_crashed > self.check_if_brawl_stars_crashed_timer:
             opened_app = self.device.app_current().package.strip()
-            if opened_app != BRAWL_STARS_PACKAGE.strip():
+            if opened_app != self.brawl_stars_package:
                 print(f"Brawl stars has crashed, {opened_app} is the app opened ! Restarting...")
-                self.device.app_start(BRAWL_STARS_PACKAGE)
+                self.device.app_start(self.brawl_stars_package)
                 time.sleep(3)
                 self.time_since_checked_if_brawl_stars_crashed = time.time()
             else:

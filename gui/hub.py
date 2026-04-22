@@ -42,11 +42,13 @@ class Hub:
         self.time_tresholds_path = "cfg/time_tresholds.toml"
         self.match_history_path = "cfg/match_history.toml"
         self.general_config_path = "cfg/general_config.toml"
+        self.webhook_config_path = "cfg/webhook_config.toml"
 
         self.bot_config = load_toml_as_dict(self.bot_config_path)
         self.time_tresholds = load_toml_as_dict(self.time_tresholds_path)
         self.match_history = load_toml_as_dict(self.match_history_path)
         self.general_config = load_toml_as_dict(self.general_config_path)
+        self.webhook_config = load_toml_as_dict(self.webhook_config_path)
 
         # -----------------------------------------------------------------------------------------
         # Defaults
@@ -61,6 +63,7 @@ class Hub:
         self.bot_config.setdefault("unstuck_movement_delay", 3.0)
         self.bot_config.setdefault("unstuck_movement_hold_time", 1.5)
         self.bot_config.setdefault("play_again_on_win", "no")
+        self.bot_config.setdefault("current_playstyle", "default.pyla")
 
 
         # Time thresholds defaults
@@ -75,16 +78,26 @@ class Hub:
         self.general_config.setdefault("max_ips", "auto")
         self.general_config.setdefault("scrcpy_max_fps", 15)
         self.general_config.setdefault("onnx_cpu_threads", "auto")
+        self.general_config.setdefault("used_threads", self.general_config.get("onnx_cpu_threads", "auto"))
         self.general_config.setdefault("super_debug", "yes")
         self.general_config.setdefault("cpu_or_gpu", "auto")
         self.general_config.setdefault("directml_device_id", "auto")
         self.general_config.setdefault("long_press_star_drop", "no")
         self.general_config.setdefault("trophies_multiplier", 1.0)
+        self.general_config.setdefault("ocr_scale_down_factor", 0.5)
+        self.general_config.setdefault("player_tag", "")
         self.general_config.setdefault("current_emulator", "LDPlayer")
         self.general_config.setdefault("emulator_port", 5555)
         self.general_config.setdefault("terminal_logging", "no")
         self.general_config.setdefault("visual_debug", "no")
         self.general_config.setdefault("capture_bad_vision_frames", "no")
+
+        self.webhook_config.setdefault("webhook_url", self.general_config.get("personal_webhook", ""))
+        self.webhook_config.setdefault("discord_id", self.general_config.get("discord_id", ""))
+        self.webhook_config.setdefault("ping_when_stuck", False)
+        self.webhook_config.setdefault("ping_when_target_is_reached", False)
+        self.webhook_config.setdefault("ping_every_x_match", 0)
+        self.webhook_config.setdefault("ping_every_x_minutes", 0)
 
         # -----------------------------------------------------------------------------------------
         # Appearance
@@ -139,12 +152,14 @@ class Hub:
         # Add tabs
         self.tab_overview = self.tabview.add("Overview")
         self.tab_additional = self.tabview.add("Additional Settings")
+        self.tab_webhook = self.tabview.add("Webhook")
         self.tab_timers = self.tabview.add("Timers")
         self.tab_history = self.tabview.add("Match History")
 
         # Init each tab
         self._init_overview_tab()
         self._init_additional_tab()
+        self._init_webhook_tab()
         self._init_timers_tab()
         self._init_history_tab()
 
@@ -613,7 +628,7 @@ class Hub:
     # ---------------------------------------------------------------------------------------------
     def _init_additional_tab(self):
         frame = self.tab_additional
-        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container = ctk.CTkScrollableFrame(frame, width=S(900), height=S(620), fg_color="transparent")
         container.pack(expand=True, fill="both")
 
         # Extra space to avoid tooltip clipping
@@ -894,6 +909,30 @@ class Hub:
             tooltip_text="Enter the multiplier for trophies gained per match (for example : 2 for brawl arena)."
         )
 
+        create_labeled_entry(
+            label_text="Player Tag:",
+            config_key="player_tag",
+            convert_func=lambda s: s.strip().lstrip("#"),
+            use_general_config=True,
+            tooltip_text="Player tag used to auto-fill unlocked brawlers and current trophies."
+        )
+
+        create_labeled_entry(
+            label_text="OCR Scale:",
+            config_key="ocr_scale_down_factor",
+            convert_func=float,
+            use_general_config=True,
+            tooltip_text="Scale used for brawler-name OCR in the select menu. Lower is faster; adjust if it taps the wrong card."
+        )
+
+        create_labeled_entry(
+            label_text="Current Playstyle:",
+            config_key="current_playstyle",
+            convert_func=str,
+            use_general_config=False,
+            tooltip_text="Filename from the playstyles folder used for editable match logic."
+        )
+
         # 10) Gadget Detection Pixel Threshold (bot_config)
         create_labeled_entry(
             label_text="Gadget Detection Pixel Treshold:",
@@ -930,12 +969,74 @@ class Hub:
         )
 
         create_labeled_entry(
-            label_text="ONNX CPU Threads:",
-            config_key="onnx_cpu_threads",
+            label_text="Used Threads:",
+            config_key="used_threads",
             convert_func=lambda s: s if s.lower() == "auto" else int(s),
             use_general_config=True,
             tooltip_text="CPU threads used by the detection models. Lower values reduce CPU usage."
         )
+
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_columnconfigure(1, weight=1)
+
+        self._add_version_label(frame)
+
+    def _init_webhook_tab(self):
+        frame = self.tab_webhook
+        container = ctk.CTkScrollableFrame(frame, width=S(900), height=S(620), fg_color="transparent")
+        container.pack(expand=True, fill="both")
+
+        row_idx = 0
+
+        def create_webhook_entry(label_text, config_key, convert_func=str, width=360):
+            nonlocal row_idx
+            lbl = ctk.CTkLabel(container, text=label_text, font=("Arial", S(18)))
+            lbl.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))
+            var_str = tk.StringVar(value=str(self.webhook_config.get(config_key, "")))
+
+            def on_save(*_):
+                val_str = var_str.get().strip()
+                try:
+                    self.webhook_config[config_key] = convert_func(val_str)
+                    save_dict_as_toml(self.webhook_config, self.webhook_config_path)
+                except ValueError:
+                    var_str.set(str(self.webhook_config.get(config_key, "")))
+
+            entry = ctk.CTkEntry(container, textvariable=var_str, width=S(width), font=("Arial", S(16)))
+            entry.grid(row=row_idx, column=1, sticky="w", padx=S(20), pady=S(10))
+            entry.bind("<FocusOut>", on_save)
+            entry.bind("<Return>", on_save)
+            row_idx += 1
+
+        def create_webhook_toggle(label_text, config_key):
+            nonlocal row_idx
+            lbl = ctk.CTkLabel(container, text=label_text, font=("Arial", S(18)))
+            lbl.grid(row=row_idx, column=0, sticky="e", padx=S(20), pady=S(10))
+            var_bool = tk.BooleanVar(value=bool(self.webhook_config.get(config_key, False)))
+
+            def on_toggle():
+                self.webhook_config[config_key] = bool(var_bool.get())
+                save_dict_as_toml(self.webhook_config, self.webhook_config_path)
+
+            checkbox = ctk.CTkCheckBox(
+                container,
+                text="",
+                variable=var_bool,
+                command=on_toggle,
+                fg_color="#AA2A2A",
+                hover_color="#BB3A3A",
+                width=S(30),
+                height=S(30),
+            )
+            checkbox.grid(row=row_idx, column=1, sticky="w", padx=S(20), pady=S(10))
+            row_idx += 1
+
+        create_webhook_entry("Webhook URL:", "webhook_url", str, width=440)
+        create_webhook_entry("Discord ID:", "discord_id", str, width=220)
+        create_webhook_toggle("Ping When Stuck:", "ping_when_stuck")
+        create_webhook_toggle("Ping On Target:", "ping_when_target_is_reached")
+        create_webhook_entry("Ping Every X Matches:", "ping_every_x_match", lambda s: 0 if s == "" else int(s), width=120)
+        create_webhook_entry("Ping Every X Minutes:", "ping_every_x_minutes", lambda s: 0 if s == "" else int(s), width=120)
 
         container.grid_columnconfigure(0, weight=1)
         container.grid_columnconfigure(1, weight=1)

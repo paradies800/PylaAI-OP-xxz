@@ -15,7 +15,9 @@ def main():
     parser.add_argument("--batch", default="-1", help="Ultralytics batch value. -1 auto-selects.")
     parser.add_argument("--device", default="0", help="0 for GPU, cpu for CPU.")
     parser.add_argument("--name", default="pylaai_vision")
+    parser.add_argument("--project", default="runs/vision_train")
     parser.add_argument("--replace", action="store_true", help="Replace models/mainInGameModel.onnx after export.")
+    parser.add_argument("--target", default="models/mainInGameModel.onnx", help="Active ONNX path used with --replace.")
     args = parser.parse_args()
 
     data = (ROOT / args.data).resolve()
@@ -36,7 +38,7 @@ def main():
         batch=batch,
         device=args.device,
         name=args.name,
-        project=str(ROOT / "runs" / "vision_train"),
+        project=str(ROOT / args.project),
     )
 
     best_pt = Path(results.save_dir) / "weights" / "best.pt"
@@ -48,7 +50,7 @@ def main():
     print(f"Exported ONNX: {exported}")
 
     if args.replace:
-        target = ROOT / "models" / "mainInGameModel.onnx"
+        target = (ROOT / args.target).resolve()
         backup = target.with_suffix(".onnx.bak")
         if target.exists() and not backup.exists():
             shutil.copy2(target, backup)

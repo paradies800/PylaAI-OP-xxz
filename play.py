@@ -5,6 +5,7 @@ import random
 import time
 
 import cv2
+import numpy as np
 from state_finder import get_state
 from detect import Detect
 from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
@@ -412,13 +413,27 @@ class Play(Movement):
         self.super_pixels_minimum = bot_config["super_pixels_minimum"]
         self.wall_detection_confidence = bot_config["wall_detection_confidence"]
         self.entity_detection_confidence = bot_config["entity_detection_confidence"]
+        self.entity_detection_retry_confidence = float(
+            bot_config.get("entity_detection_retry_confidence", max(0.35, self.entity_detection_confidence - 0.20))
+        )
+        self.player_center_bias_radius = float(bot_config.get("player_center_bias_radius", 420))
+        self.player_green_pixel_weight = float(bot_config.get("player_green_pixel_weight", 0.03))
+        self.player_red_pixel_penalty = float(bot_config.get("player_red_pixel_penalty", 0.05))
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = load_toml_as_dict("cfg/bot_config.toml")["seconds_to_hold_attack_after_reaching_max"]
         self.current_frame = None
         general_config = load_toml_as_dict("cfg/general_config.toml")
+        lobby_config = load_toml_as_dict("./cfg/lobby_config.toml")
+        self.super_crop_area = lobby_config['pixel_counter_crop_area']['super']
+        self.gadget_crop_area = lobby_config['pixel_counter_crop_area']['gadget']
+        self.hypercharge_crop_area = lobby_config['pixel_counter_crop_area']['hypercharge']
         global debug, visual_debug
         debug = str(general_config.get("super_debug", "no")).lower() in ("yes", "true", "1")
         visual_debug = str(general_config.get("visual_debug", "no")).lower() in ("yes", "true", "1")
+        self.visual_debug_scale = max(0.25, min(1.0, float(general_config.get("visual_debug_scale", 0.6))))
+        self.visual_debug_max_fps = max(1.0, float(general_config.get("visual_debug_max_fps", 10)))
+        self.visual_debug_max_boxes = max(20, int(general_config.get("visual_debug_max_boxes", 120)))
+        self._visual_debug_next_frame_at = 0.0
         self.capture_bad_vision_frames = str(general_config.get("capture_bad_vision_frames", "no")).lower() in ("yes", "true", "1")
         self.bad_vision_capture_dir = general_config.get("bad_vision_capture_dir", "debug_frames/vision")
         self.bad_vision_capture_interval = float(general_config.get("bad_vision_capture_interval", 2.0))
@@ -450,6 +465,114 @@ class Play(Movement):
         self._fog_mask_cache_frame_id = None
         self._fog_mask_cache_value = None
         self._fog_mask_cache_origin = None
+        self.playstyle_name = str(bot_config.get("current_playstyle", "")).strip()
+        self.playstyle_meta = {}
+        self.playstyle_code = None
+        self._playstyle_error_reported = False
+        self.load_playstyle()
+
+    def load_playstyle(self):
+        if not self.playstyle_name:
+            return
+        safe_name = os.path.basename(self.playstyle_name)
+        path = os.path.join("playstyles", safe_name)
+        if not os.path.exists(path):
+            print(f"Playstyle '{safe_name}' was not found. Falling back to built-in logic.")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+                try:
+                    self.playstyle_meta = json.loads(first_line) if first_line.startswith("{") else {}
+                    source = f.read()
+                except json.JSONDecodeError:
+                    self.playstyle_meta = {}
+                    source = first_line + "\n" + f.read()
+            self.playstyle_code = compile(source, path, "exec")
+            print(f"Loaded playstyle: {safe_name}")
+        except Exception as e:
+            print(f"Could not load playstyle '{safe_name}': {e}. Falling back to built-in logic.")
+            self.playstyle_code = None
+
+    def run_playstyle(self, player_data, enemy_data, walls, brawler):
+        if self.playstyle_code is None:
+            return None
+
+        persistent_data = {
+            "time_since_holding_attack": self.time_since_holding_attack,
+        }
+
+        def use_hypercharge_wrapper():
+            self.use_hypercharge()
+            self.time_since_hypercharge_checked = time.time()
+            self.is_hypercharge_ready = False
+
+        def use_gadget_wrapper():
+            if self.should_use_gadget:
+                self.use_gadget()
+                self.time_since_gadget_checked = time.time()
+                self.is_gadget_ready = False
+
+        def use_super_wrapper():
+            self.use_super()
+            self.time_since_super_checked = time.time()
+            self.is_super_ready = False
+
+        env = {
+            "__builtins__": {
+                "abs": abs,
+                "bool": bool,
+                "float": float,
+                "int": int,
+                "len": len,
+                "max": max,
+                "min": min,
+                "print": print,
+                "range": range,
+                "str": str,
+                "ValueError": ValueError,
+            },
+            "time": time,
+            "random": random,
+            "debug": debug,
+            "brawler": brawler,
+            "brawlers_info": self.brawlers_info,
+            "player_data": player_data,
+            "enemy_data": enemy_data,
+            "walls": walls,
+            "game_mode": self.game_mode,
+            "persistent_data": persistent_data,
+            "seconds_to_hold_attack_after_reaching_max": self.seconds_to_hold_attack_after_reaching_max,
+            "is_hypercharge_ready": self.is_hypercharge_ready,
+            "is_gadget_ready": self.should_use_gadget and self.is_gadget_ready,
+            "is_super_ready": self.is_super_ready,
+            "movement": None,
+            "attack": self.attack,
+            "use_hypercharge": use_hypercharge_wrapper,
+            "use_gadget": use_gadget_wrapper,
+            "use_super": use_super_wrapper,
+            "must_brawler_hold_attack": self.must_brawler_hold_attack,
+            "get_brawler_range": self.get_brawler_range,
+            "get_player_pos": self.get_player_pos,
+            "is_there_enemy": self.is_there_enemy,
+            "no_enemy_movement": self.no_enemy_movement,
+            "find_closest_enemy": self.find_closest_enemy,
+            "get_horizontal_move_key": self.get_horizontal_move_key,
+            "get_vertical_move_key": self.get_vertical_move_key,
+            "is_path_blocked": self.is_path_blocked,
+            "is_enemy_hittable": self.is_enemy_hittable,
+        }
+
+        try:
+            exec(self.playstyle_code, env, env)
+        except Exception as e:
+            if not self._playstyle_error_reported:
+                print(f"Playstyle '{self.playstyle_name}' failed: {e}. Falling back to built-in logic.")
+                self._playstyle_error_reported = True
+            return None
+
+        self.time_since_holding_attack = persistent_data.get("time_since_holding_attack")
+        return env.get("movement")
 
     def capture_vision_frame(self, reason, frame, data=None, brawler=None, extra=None):
         if not self.capture_bad_vision_frames or frame is None:
@@ -579,6 +702,7 @@ class Play(Movement):
         if frame is None:
             return None
 
+        roi_radius = int(max(1, roi_radius))
         cache_key = (id(frame), int(roi_center[0]), int(roi_center[1]), int(roi_radius))
         if self._fog_mask_cache_frame_id == cache_key:
             return self._fog_mask_cache_value
@@ -906,9 +1030,77 @@ class Play(Movement):
 
         return None, None
 
+    @staticmethod
+    def _count_mask_pixels(hsv_roi, lower, upper):
+        if hsv_roi.size == 0:
+            return 0
+        mask = cv2.inRange(hsv_roi, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8))
+        return int(cv2.countNonZero(mask))
+
+    def _entity_team_color_scores(self, frame, box):
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = map(int, self.normalize_box(box))
+        pad_x = max(18, int((x2 - x1) * 0.45))
+        pad_y = max(24, int((y2 - y1) * 0.75))
+        rx1 = max(0, x1 - pad_x)
+        ry1 = max(0, y1 - pad_y)
+        rx2 = min(w, x2 + pad_x)
+        ry2 = min(h, y2 + pad_y)
+        roi = frame[ry1:ry2, rx1:rx2]
+        if roi.size == 0:
+            return 0, 0
+        hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+        # Friendly self/teammate overlays are bright green; enemy HP/name UI is red/orange.
+        green = self._count_mask_pixels(hsv, (35, 80, 80), (85, 255, 255))
+        red = (
+            self._count_mask_pixels(hsv, (0, 80, 80), (14, 255, 255))
+            + self._count_mask_pixels(hsv, (170, 80, 80), (179, 255, 255))
+        )
+        return green, red
+
+    def select_own_player_box(self, frame, player_boxes):
+        if not player_boxes:
+            return None, []
+        h, w = frame.shape[:2]
+        screen_center = (w * 0.5, h * 0.54)
+        radius = max(1.0, self.player_center_bias_radius * self.window_controller.scale_factor)
+        scored = []
+        for box in player_boxes:
+            cx, cy = self.get_player_pos(box)
+            center_dist = math.hypot(cx - screen_center[0], cy - screen_center[1])
+            center_score = max(0.0, 1.0 - center_dist / radius)
+            green, red = self._entity_team_color_scores(frame, box)
+            color_score = green * self.player_green_pixel_weight - red * self.player_red_pixel_penalty
+            scored.append((center_score + color_score, center_dist, box))
+        scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        own_box = scored[0][2]
+        rejected = [item[2] for item in scored[1:]]
+        if visual_debug and rejected:
+            print(f"[DBG] own player selected: {own_box}; reclassified {len(rejected)} player boxes as enemy")
+        return own_box, rejected
+
+    def stabilize_entity_roles(self, frame, data):
+        players = data.get("player") or []
+        own_box, rejected_players = self.select_own_player_box(frame, players)
+        if own_box is not None:
+            data["player"] = [own_box]
+        if rejected_players:
+            data.setdefault("enemy", [])
+            data["enemy"].extend(rejected_players)
+        return data
+
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
-        return data
+        if not data.get("player") and self.entity_detection_retry_confidence < self.entity_detection_confidence:
+            retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+            if retry_data.get("player"):
+                if visual_debug:
+                    print(
+                        "[DBG] player recovered with lower entity threshold "
+                        f"{self.entity_detection_retry_confidence:.2f}"
+                    )
+                data = retry_data
+        return self.stabilize_entity_roles(frame, data)
 
     def is_path_blocked(self, player_pos, move_direction, walls, distance=None):  # Increased distance
         if distance is None:
@@ -1076,8 +1268,8 @@ class Play(Movement):
 
     def check_if_hypercharge_ready(self, frame):
         wr, hr = self.window_controller.width_ratio, self.window_controller.height_ratio
-        x1, y1 = int(hypercharge_crop_area[0] * wr), int(hypercharge_crop_area[1] * hr)
-        x2, y2 = int(hypercharge_crop_area[2] * wr), int(hypercharge_crop_area[3] * hr)
+        x1, y1 = int(self.hypercharge_crop_area[0] * wr), int(self.hypercharge_crop_area[1] * hr)
+        x2, y2 = int(self.hypercharge_crop_area[2] * wr), int(self.hypercharge_crop_area[3] * hr)
         screenshot = frame[y1:y2, x1:x2]
         purple_pixels = count_hsv_pixels(screenshot, (137, 158, 159), (179, 255, 255))
         if debug:
@@ -1089,8 +1281,8 @@ class Play(Movement):
 
     def check_if_gadget_ready(self, frame):
         wr, hr = self.window_controller.width_ratio, self.window_controller.height_ratio
-        x1, y1 = int(gadget_crop_area[0] * wr), int(gadget_crop_area[1] * hr)
-        x2, y2 = int(gadget_crop_area[2] * wr), int(gadget_crop_area[3] * hr)
+        x1, y1 = int(self.gadget_crop_area[0] * wr), int(self.gadget_crop_area[1] * hr)
+        x2, y2 = int(self.gadget_crop_area[2] * wr), int(self.gadget_crop_area[3] * hr)
         screenshot = frame[y1:y2, x1:x2]
         green_pixels = count_hsv_pixels(screenshot, (57, 219, 165), (62, 255, 255))
         if debug:
@@ -1102,8 +1294,8 @@ class Play(Movement):
 
     def check_if_super_ready(self, frame):
         wr, hr = self.window_controller.width_ratio, self.window_controller.height_ratio
-        x1, y1 = int(super_crop_area[0] * wr), int(super_crop_area[1] * hr)
-        x2, y2 = int(super_crop_area[2] * wr), int(super_crop_area[3] * hr)
+        x1, y1 = int(self.super_crop_area[0] * wr), int(self.super_crop_area[1] * hr)
+        x2, y2 = int(self.super_crop_area[2] * wr), int(self.super_crop_area[3] * hr)
         screenshot = frame[y1:y2, x1:x2]
         yellow_pixels = count_hsv_pixels(screenshot, (17, 170, 200), (27, 255, 255))
         if debug:
@@ -1206,6 +1398,9 @@ class Play(Movement):
         brawler_info = self.brawlers_info.get(brawler)
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
+        playstyle_movement = self.run_playstyle(player_data, enemy_data, walls, brawler)
+        if playstyle_movement is not None:
+            return playstyle_movement
         must_brawler_hold_attack = self.must_brawler_hold_attack(brawler, self.brawlers_info)
         # if a brawler has been holding an attack for its max duration + the bot setting, then we release
         if must_brawler_hold_attack and self.time_since_holding_attack is not None and time.time() - self.time_since_holding_attack >= brawler_info['hold_attack'] + self.seconds_to_hold_attack_after_reaching_max:
@@ -1384,7 +1579,22 @@ class Play(Movement):
 
     def show_visual_debug(self, frame, data, brawler=None):
         import numpy as np
-        img = frame.copy() if isinstance(frame, np.ndarray) else np.array(frame)
+        now = time.time()
+        if now < self._visual_debug_next_frame_at:
+            return
+        self._visual_debug_next_frame_at = now + (1.0 / self.visual_debug_max_fps)
+
+        scale = self.visual_debug_scale
+        if scale < 0.999:
+            img = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            img = frame.copy() if isinstance(frame, np.ndarray) else np.array(frame)
+
+        def s(value):
+            return int(value * scale)
+
+        def sp(point):
+            return s(point[0]), s(point[1])
 
         # --- Fog overlay ---
         # Only draw the fog tint + centroid arrow when a fog threat is strong
@@ -1403,22 +1613,27 @@ class Play(Movement):
                     dist_sq = dx_all * dx_all + dy_all * dy_all
                     inside = dist_sq <= r * r
                     if int(inside.sum()) >= self.fog_min_pixels_in_radius:
-                        # Paint only the trusted, in-radius pixels magenta
-                        full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
-                        xs_in = xs[inside] + ox
-                        ys_in = ys[inside] + oy
-                        full_mask[ys_in, xs_in] = 255
-                        tint = np.zeros_like(img)
-                        tint[:, :] = (255, 0, 255)  # magenta in RGB
-                        img = np.where(full_mask[..., None] > 0,
-                                       cv2.addWeighted(img, 0.5, tint, 0.5, 0),
-                                       img)
+                        # Paint only the fog ROI instead of allocating a full-frame mask/tint.
+                        roi_mask = np.zeros_like(mask)
+                        roi_mask[ys[inside], xs[inside]] = 255
+                        if scale < 0.999:
+                            roi_mask = cv2.resize(roi_mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+                        x0, y0 = s(ox), s(oy)
+                        x1 = min(img.shape[1], x0 + roi_mask.shape[1])
+                        y1 = min(img.shape[0], y0 + roi_mask.shape[0])
+                        roi_mask = roi_mask[:max(0, y1 - y0), :max(0, x1 - x0)]
+                        if roi_mask.size:
+                            roi = img[y0:y1, x0:x1]
+                            magenta = np.empty_like(roi)
+                            magenta[:, :] = (255, 0, 255)
+                            blended = cv2.addWeighted(roi, 0.55, magenta, 0.45, 0)
+                            roi[roi_mask > 0] = blended[roi_mask > 0]
                         fog_cx = int(dx_all[inside].mean() + px)
                         fog_cy = int(dy_all[inside].mean() + py)
-                        cv2.circle(img, (fog_cx, fog_cy), 8, (255, 0, 255), -1)
-                        cv2.putText(img, "fog", (fog_cx + 10, fog_cy),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-                        cv2.arrowedLine(img, (int(px), int(py)), (fog_cx, fog_cy),
+                        cv2.circle(img, sp((fog_cx, fog_cy)), max(3, s(8)), (255, 0, 255), -1)
+                        cv2.putText(img, "fog", sp((fog_cx + 10, fog_cy)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, max(0.35, 0.6 * scale), (255, 0, 255), 2)
+                        cv2.arrowedLine(img, sp((px, py)), sp((fog_cx, fog_cy)),
                                         (255, 0, 255), 2, tipLength=0.15)
 
         # Colors in RGB (frame is kept in RGB; converted to BGR only for imshow).
@@ -1428,24 +1643,29 @@ class Play(Movement):
             "enemy":    (255, 0, 0),    # red
             "wall":     (128, 128, 128),  # gray
         }
+        boxes_drawn = 0
         for key, color in colors.items():
             boxes = data.get(key)
             if not boxes:
                 continue
             for box in boxes:
+                if boxes_drawn >= self.visual_debug_max_boxes:
+                    break
                 x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(img, key, (x1, max(y1 - 6, 0)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                cv2.rectangle(img, sp((x1, y1)), sp((x2, y2)), color, max(1, s(2)))
+                if key != "wall":
+                    cv2.putText(img, key, sp((x1, max(y1 - 6, 0))),
+                                cv2.FONT_HERSHEY_SIMPLEX, max(0.35, 0.5 * scale), color, 1)
+                boxes_drawn += 1
 
         # Draw attack/super ranges around the player based on brawlers_info.json.
         if brawler and data.get("player"):
             info = self.brawlers_info.get(brawler)
             if info:
                 px, py = self.get_player_pos(data["player"][0])
-                center = (int(px), int(py))
-                attack_range = int(info.get("attack_range", 0))
-                super_range = int(info.get("super_range", 0))
+                center = sp((px, py))
+                attack_range = s(int(info.get("attack_range", 0)))
+                super_range = s(int(info.get("super_range", 0)))
                 if attack_range > 0:
                     cv2.circle(img, center, attack_range, (160, 32, 240), 2)  # purple
                 if super_range > 0:

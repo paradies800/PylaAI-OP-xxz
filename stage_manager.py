@@ -214,6 +214,12 @@ class StageManager:
                 self.brawlers_pick_data[0][type_to_push] = value
                 self.brawlers_pick_data[0]['win_streak'] = self.Trophy_observer.win_streak
                 save_brawler_data(self.brawlers_pick_data)
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(async_notify_user("match", screenshot))
+                finally:
+                    loop.close()
                 push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
 
                 if value == "" and type_to_push == "wins":
