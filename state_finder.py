@@ -2,7 +2,7 @@ import os
 import sys
 import cv2
 sys.path.append(os.path.abspath('/'))
-from utils import load_toml_as_dict
+from utils import extract_text_strings, load_toml_as_dict
 
 orig_screen_width, orig_screen_height = 1920, 1080
 
@@ -127,6 +127,9 @@ def get_in_game_state(image):
     if is_in_trophy_reward(image):
         return "trophy_reward"
 
+    if is_in_player_title_reward(image):
+        return "player_title_reward"
+
     return "match"
 
 
@@ -153,6 +156,45 @@ def is_in_end_of_a_match(image):
 
 def is_in_trophy_reward(image):
     return is_template_in_region(image, states_path + 'trophies_screen.png', region_data["trophies_screen"])
+
+
+_last_player_title_ocr_time = 0.0
+_last_player_title_ocr_result = False
+
+
+def is_in_player_title_reward(image):
+    global _last_player_title_ocr_time, _last_player_title_ocr_result
+    import time
+
+    now = time.time()
+    if now - _last_player_title_ocr_time < 1.0:
+        return _last_player_title_ocr_result
+    _last_player_title_ocr_time = now
+
+    height, width = image.shape[:2]
+    # The title reward screen is a bright blue full-screen reward page with
+    # "NEW PLAYER TITLE" at the top and battle-card text underneath.
+    top_half = image[0:int(height * 0.62), int(width * 0.16):int(width * 0.84)]
+    hsv = cv2.cvtColor(top_half, cv2.COLOR_BGR2HSV)
+    blue_ratio = cv2.inRange(hsv, (90, 65, 70), (125, 255, 255)).mean() / 255.0
+    if blue_ratio < 0.22:
+        _last_player_title_ocr_result = False
+        return False
+
+    try:
+        text = " ".join(extract_text_strings(top_half)).lower()
+    except Exception as e:
+        if super_debug:
+            print(f"Could not OCR player title reward screen: {e}")
+        _last_player_title_ocr_result = False
+        return False
+
+    normalized = "".join(ch for ch in text if ch.isalnum())
+    _last_player_title_ocr_result = (
+        "newplayertitle" in normalized
+        or ("playertitle" in normalized and "battlecard" in normalized)
+    )
+    return _last_player_title_ocr_result
 
 
 

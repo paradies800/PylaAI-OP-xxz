@@ -32,6 +32,20 @@ class LobbyAutomation:
         if gray_pixels > gray_pixels_threshold:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
+    def quick_select_least_trophies_brawler(self):
+        self.window_controller.screenshot()
+
+        def tap(x, y, wait=0.8):
+            self.window_controller.click(x, y, already_include_ratio=False)
+            time.sleep(wait)
+
+        print("Selecting next brawler with in-game Lowest Trophies sort.")
+        tap(128, 500, 1.4)   # left Brawlers button in lobby
+        tap(1210, 45, 0.6)   # sort dropdown
+        tap(1210, 426, 1.0)  # Lowest Trophies
+        tap(422, 359, 1.0)   # first brawler card
+        tap(260, 991, 1.0)   # Select
+
     def select_brawler(self, brawler):
         self.window_controller.screenshot()
         wr = self.window_controller.width_ratio

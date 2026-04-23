@@ -80,7 +80,8 @@ class StageManager:
             'end_4th': self.end_game,
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
-            'trophy_reward': lambda: self.window_controller.press_key("Q")
+            'trophy_reward': lambda: self.window_controller.press_key("Q"),
+            'player_title_reward': self.handle_player_title_reward,
         }
 
     @staticmethod
@@ -96,8 +97,7 @@ class StageManager:
         trophy_value = int(numbers)
         return trophy_value
 
-    def start_game(self):
-        print("state is lobby, starting game")
+    def current_target_status(self):
         values = {
             "trophies": self.Trophy_observer.current_trophies,
             "wins": self.Trophy_observer.current_wins
@@ -114,61 +114,91 @@ class StageManager:
             push_current_brawler_till = 300
         if push_current_brawler_till == "" and type_of_push == "trophies":
             push_current_brawler_till = 1000
+        return type_of_push, value, push_current_brawler_till
 
-        if value >= push_current_brawler_till:
-            if len(self.brawlers_pick_data) <= 1:
-                print("Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
-                      "Bot will now pause itself until closed.", value, push_current_brawler_till)
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    screenshot = self.window_controller.screenshot()
-                    loop.run_until_complete(async_notify_user("completed", screenshot))
-                finally:
-                    loop.close()
-                print("Bot stopping: all targets completed with no more brawlers.")
-                self.window_controller.keys_up(list("wasd"))
-                self.window_controller.close()
-                sys.exit(0)
+    def advance_to_next_brawler_if_needed(self):
+        type_of_push, value, push_current_brawler_till = self.current_target_status()
+        if value < push_current_brawler_till:
+            return False
+
+        if len(self.brawlers_pick_data) <= 1:
+            print("Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
+                  "Bot will now pause itself until closed.", value, push_current_brawler_till)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 screenshot = self.window_controller.screenshot()
-                loop.run_until_complete(async_notify_user(self.brawlers_pick_data[0]["brawler"], screenshot))
+                loop.run_until_complete(async_notify_user("completed", screenshot))
             finally:
                 loop.close()
-            self.brawlers_pick_data.pop(0)
-            self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-            self.Trophy_observer.current_wins = self.brawlers_pick_data[0]['wins'] if self.brawlers_pick_data[0]['wins'] != "" else 0
-            self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
-            next_brawler_name = self.brawlers_pick_data[0]['brawler']
-            if self.brawlers_pick_data[0]["automatically_pick"]:
-                print("Picking next automatically picked brawler")
+            print("Bot stopping: all targets completed with no more brawlers.")
+            self.window_controller.keys_up(list("wasd"))
+            self.window_controller.close()
+            sys.exit(0)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            screenshot = self.window_controller.screenshot()
+            loop.run_until_complete(async_notify_user(self.brawlers_pick_data[0]["brawler"], screenshot))
+        finally:
+            loop.close()
+        self.brawlers_pick_data.pop(0)
+        save_brawler_data(self.brawlers_pick_data)
+        self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
+        self.Trophy_observer.current_wins = self.brawlers_pick_data[0]['wins'] if self.brawlers_pick_data[0]['wins'] != "" else 0
+        self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+        next_brawler_name = self.brawlers_pick_data[0]['brawler']
+        if self.brawlers_pick_data[0]["automatically_pick"]:
+            print("Picking next automatically picked brawler")
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+            if current_state != "lobby":
+                print("Trying to reach the lobby to switch brawler")
+
+            max_attempts = 30
+            attempts = 0
+            while current_state != "lobby" and attempts < max_attempts:
+                self.window_controller.press_key("Q")
+                print("Pressed Q to return to lobby")
+                time.sleep(1)
                 screenshot = self.window_controller.screenshot()
                 current_state = get_state(screenshot)
-                if current_state != "lobby":
-                    print("Trying to reach the lobby to switch brawler")
-
-                max_attempts = 30
-                attempts = 0
-                while current_state != "lobby" and attempts < max_attempts:
-                    self.window_controller.press_key("Q")
-                    print("Pressed Q to return to lobby")
-                    time.sleep(1)
-                    screenshot = self.window_controller.screenshot()
-                    current_state = get_state(screenshot)
-                    attempts += 1
-                if attempts >= max_attempts:
-                    print("Failed to reach lobby after max attempts")
-                else:
-                    self.Lobby_automation.select_brawler(next_brawler_name)
+                attempts += 1
+            if attempts >= max_attempts:
+                print("Failed to reach lobby after max attempts")
             else:
-                print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
+                print(f"Using in-game Lowest Trophies sort for next brawler ({next_brawler_name}).")
+                self.Lobby_automation.quick_select_least_trophies_brawler()
+        else:
+            print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
+        return True
+
+    def start_game(self):
+        print("state is lobby, starting game")
+        self.advance_to_next_brawler_if_needed()
 
         # q btn is over the start btn
         self.window_controller.keys_up(list("wasd"))
         self.window_controller.press_key("Q")
         print("Pressed Q to start a match")
+
+    def handle_player_title_reward(self):
+        print("New player title reward detected; dismissing and checking for brawler switch.")
+        self.window_controller.keys_up(list("wasd"))
+        self.window_controller.press_key("Q")
+        time.sleep(1)
+        type_of_push, value, push_current_brawler_till = self.current_target_status()
+        if type_of_push == "trophies" and value < push_current_brawler_till:
+            print(
+                "Player title reward means the current brawler reached the trophy target; "
+                f"forcing switch check from {value} to {push_current_brawler_till}."
+            )
+            self.Trophy_observer.current_trophies = push_current_brawler_till
+            self.brawlers_pick_data[0]["trophies"] = push_current_brawler_till
+            save_brawler_data(self.brawlers_pick_data)
+        self.advance_to_next_brawler_if_needed()
+
     def click_star_drop(self):
         if self.long_press_star_drop == "yes":
             self.window_controller.press_key("Q",10)

@@ -54,8 +54,19 @@ def pyla_main(data):
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
             self.states_requiring_data = ["lobby"]
             if data[0]['automatically_pick']:
-                print("Picking brawler automatically")
-                self.lobby_automator.select_brawler(data[0]['brawler'])
+                is_push_all_1k_pick = (
+                    data[0].get("quick_select_least_trophies")
+                    or (
+                        data[0].get("type") == "trophies"
+                        and str(data[0].get("push_until", "")) in ("", "1000")
+                    )
+                )
+                if is_push_all_1k_pick:
+                    print("Picking brawler automatically with in-game Lowest Trophies sort")
+                    self.lobby_automator.quick_select_least_trophies_brawler()
+                else:
+                    print("Picking brawler automatically")
+                    self.lobby_automator.select_brawler(data[0]['brawler'])
             self.Play.current_brawler = data[0]['brawler']
             self.no_detections_action_threshold = 60 * 8
             self.initialize_stage_manager()
