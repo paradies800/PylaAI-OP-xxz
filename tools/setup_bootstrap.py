@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ PYTHON_INSTALLER_URL = (
     "https://www.python.org/ftp/python/"
     f"{TARGET_PYTHON_VERSION}/python-{TARGET_PYTHON_VERSION}-amd64.exe"
 )
+VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 
 def app_dir():
@@ -24,6 +26,36 @@ def app_dir():
 def run(command, cwd=None, env=None):
     print("> " + " ".join(str(part) for part in command))
     subprocess.check_call(command, cwd=str(cwd) if cwd else None, env=env)
+
+
+def ensure_supported_windows():
+    if platform.system() != "Windows":
+        print("This setup.exe is for Windows only.")
+        input("Press Enter to close...")
+        return False
+    if platform.machine().lower() not in ("amd64", "x86_64"):
+        print("This setup.exe requires 64-bit Windows.")
+        input("Press Enter to close...")
+        return False
+    return True
+
+
+def download_file(url, destination, label):
+    if destination.exists() and destination.stat().st_size > 1_000_000:
+        return destination
+
+    print(f"Downloading {label}...")
+    try:
+        with urllib.request.urlopen(url, timeout=45) as response, destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+    except Exception as exc:
+        print("")
+        print(f"Could not download {label}.")
+        print("Check your internet connection, antivirus/firewall, or try again later.")
+        print(f"Error: {exc}")
+        input("Press Enter to close...")
+        raise SystemExit(1)
+    return destination
 
 
 def python_info(command):
@@ -77,13 +109,7 @@ def find_python():
 
 def download_python_installer():
     destination = Path(tempfile.gettempdir()) / f"pylaai-python-{TARGET_PYTHON_VERSION}-amd64.exe"
-    if destination.exists() and destination.stat().st_size > 1_000_000:
-        return destination
-
-    print(f"Downloading Python {TARGET_PYTHON_VERSION}...")
-    with urllib.request.urlopen(PYTHON_INSTALLER_URL) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
-    return destination
+    return download_file(PYTHON_INSTALLER_URL, destination, f"Python {TARGET_PYTHON_VERSION}")
 
 
 def install_python():
@@ -100,12 +126,38 @@ def install_python():
     ])
 
 
+def install_vc_redist():
+    installer = download_file(
+        VC_REDIST_URL,
+        Path(tempfile.gettempdir()) / "pylaai-vc_redist.x64.exe",
+        "Microsoft Visual C++ Redistributable x64",
+    )
+    print("Installing Microsoft Visual C++ Redistributable x64...")
+    result = subprocess.run([
+        str(installer),
+        "/install",
+        "/quiet",
+        "/norestart",
+    ])
+    # 0 = installed, 1638 = another version already installed, 3010 = reboot required.
+    if result.returncode not in (0, 1638, 3010):
+        print("")
+        print("Visual C++ Redistributable did not install cleanly.")
+        print("If setup fails later with a DLL error, install it manually:")
+        print(VC_REDIST_URL)
+        print(f"Installer exit code: {result.returncode}")
+
+
 def create_run_file(project_dir, python_command):
     python_invocation = " ".join(f'"{part}"' if " " in part else part for part in python_command)
     run_bat = project_dir / "Run pylaai-op-xxz.bat"
     run_bat.write_text(
         "@echo off\n"
         "cd /d %~dp0\n"
+        "set OMP_NUM_THREADS=2\n"
+        "set OPENBLAS_NUM_THREADS=2\n"
+        "set MKL_NUM_THREADS=2\n"
+        "set NUMEXPR_NUM_THREADS=2\n"
         f"{python_invocation} main.py\n"
         "pause\n",
         encoding="ascii",
@@ -114,6 +166,9 @@ def create_run_file(project_dir, python_command):
 
 
 def main():
+    if not ensure_supported_windows():
+        return 1
+
     project_dir = app_dir()
     setup_py = project_dir / "setup.py"
     main_py = project_dir / "main.py"
@@ -137,6 +192,7 @@ def main():
         print("Smoke test passed. Python and project files are available.")
         return 0
 
+    install_vc_redist()
     run(python_command + ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
 
     env = os.environ.copy()
