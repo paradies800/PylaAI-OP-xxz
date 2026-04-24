@@ -81,6 +81,17 @@ def pyla_main(data):
             self.cooldown_duration = 3 * 60
             self.match_ready_at = 0.0
             self.match_warmup_seconds = float(load_toml_as_dict("cfg/bot_config.toml").get("match_warmup_seconds", 4.0))
+            time_thresholds = load_toml_as_dict("cfg/time_tresholds.toml")
+            self.visual_freeze_check_interval = float(time_thresholds.get("visual_freeze_check_interval", 1.0))
+            self.visual_freeze_restart_seconds = float(time_thresholds.get("visual_freeze_restart", 45.0))
+            self.visual_freeze_diff_threshold = float(time_thresholds.get("visual_freeze_diff_threshold", 0.35))
+            self.last_visual_freeze_check = 0.0
+            self.last_visual_change_time = time.time()
+            self.last_visual_sample = None
+            self.lobby_start_retry_interval = float(time_thresholds.get("lobby_start_retry", 8.0))
+            self.lobby_stuck_restart_seconds = float(time_thresholds.get("lobby_stuck_restart", 120.0))
+            self.lobby_entered_at = None
+            self.last_lobby_start_press = 0.0
             self.last_stale_feed_recovery = 0.0
             self.stale_feed_recovery_attempts = 0
             self.last_stale_feed_message = 0.0
@@ -112,6 +123,11 @@ def pyla_main(data):
 
         def restart_brawl_stars(self):
             self.window_controller.restart_brawl_stars()
+            self.window_controller.restart_scrcpy_client()
+            self.reset_visual_freeze_watchdog()
+            self.lobby_entered_at = None
+            self.last_lobby_start_press = 0.0
+            self.last_processed_frame_id = -1
             self.Play.time_since_detections["player"] = time.time()
             self.Play.time_since_detections["enemy"] = time.time()
             if self.window_controller.device.app_current().package != window_controller.BRAWL_STARS_PACKAGE:
@@ -127,6 +143,70 @@ def pyla_main(data):
                 self.window_controller.close()
                 import sys
                 sys.exit(1)
+
+        def reset_visual_freeze_watchdog(self):
+            self.last_visual_sample = None
+            self.last_visual_freeze_check = 0.0
+            self.last_visual_change_time = time.time()
+
+        def handle_visual_freeze(self, frame):
+            if self.state != "match":
+                self.reset_visual_freeze_watchdog()
+                return False
+
+            now = time.time()
+            if now < self.match_ready_at or now - self.last_visual_freeze_check < self.visual_freeze_check_interval:
+                return False
+            self.last_visual_freeze_check = now
+
+            sample = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA)
+            sample = cv2.cvtColor(sample, cv2.COLOR_RGB2GRAY)
+            if self.last_visual_sample is None:
+                self.last_visual_sample = sample
+                self.last_visual_change_time = now
+                return False
+
+            diff = float(cv2.absdiff(sample, self.last_visual_sample).mean())
+            self.last_visual_sample = sample
+            if diff >= self.visual_freeze_diff_threshold:
+                self.last_visual_change_time = now
+                return False
+
+            frozen_for = now - self.last_visual_change_time
+            if frozen_for < self.visual_freeze_restart_seconds:
+                return False
+
+            print(
+                f"Match image did not change for {frozen_for:.1f}s "
+                f"(diff {diff:.3f}); restarting Brawl Stars and scrcpy."
+            )
+            self.window_controller.keys_up(list("wasd"))
+            self.restart_brawl_stars()
+            return True
+
+        def handle_lobby_watchdog(self, state):
+            now = time.time()
+            if state != "lobby" or self.in_cooldown:
+                if state != "lobby":
+                    self.lobby_entered_at = None
+                return False
+
+            if self.lobby_entered_at is None:
+                self.lobby_entered_at = now
+
+            if now - self.last_lobby_start_press >= self.lobby_start_retry_interval:
+                print("Lobby watchdog: pressing start again.")
+                self.window_controller.keys_up(list("wasd"))
+                self.window_controller.press_key("Q")
+                self.last_lobby_start_press = now
+
+            lobby_age = now - self.lobby_entered_at
+            if lobby_age < self.lobby_stuck_restart_seconds:
+                return False
+
+            print(f"Lobby did not enter a match for {lobby_age:.1f}s; restarting Brawl Stars.")
+            self.restart_brawl_stars()
+            return True
 
         def manage_time_tasks(self, frame):
             if self.handle_disconnect_screen(frame):
@@ -145,6 +225,7 @@ def pyla_main(data):
                     self.match_ready_at = time.time() + self.match_warmup_seconds
                 frame_data = None
                 self.Stage_manager.do_state(state, frame_data)
+                self.handle_lobby_watchdog(state)
 
             if self.Time_management.no_detections_check():
                 frame_data = self.Play.time_since_detections
@@ -190,7 +271,7 @@ def pyla_main(data):
             print(f"Disconnect/reload screen detected, recovery attempt {self.disconnect_reload_attempts}.")
             if self.disconnect_reload_attempts >= 3:
                 print("Reload did not clear disconnect screen; restarting Brawl Stars.")
-                self.window_controller.restart_brawl_stars()
+                self.restart_brawl_stars()
                 self.disconnect_reload_attempts = 0
             else:
                 self.window_controller.click(550, 450, already_include_ratio=False)
@@ -215,8 +296,7 @@ def pyla_main(data):
 
             if self.stale_feed_recovery_attempts >= 3 or stale_age > 45:
                 print("Scrcpy feed is still frozen; restarting Brawl Stars and scrcpy.")
-                self.window_controller.restart_brawl_stars()
-                self.window_controller.restart_scrcpy_client()
+                self.restart_brawl_stars()
                 self.stale_feed_recovery_attempts = 0
             else:
                 print(f"Scrcpy frame is {age_text}; restarting scrcpy feed.")
@@ -259,6 +339,9 @@ def pyla_main(data):
                 if self.run_for_minutes > 0 and not self.in_cooldown:
                     elapsed_time = (time.time() - self.start_time) / 60
                     if elapsed_time >= self.run_for_minutes:
+                        if self.state != "match":
+                            cprint(f"timer is done, {self.run_for_minutes} minutes are over and bot is not in game. stopping bot fully", "#AAE5A4")
+                            break
                         cprint(f"timer is done, {self.run_for_minutes} is over. continuing for 3 minutes if in game", "#AAE5A4")
                         self.in_cooldown = True # tries to finish game if in game
                         self.cooldown_start_time = time.time()
@@ -308,6 +391,9 @@ def pyla_main(data):
                 self.last_processed_frame_id = frame_id
 
                 self.manage_time_tasks(frame)
+
+                if self.handle_visual_freeze(frame):
+                    continue
 
                 if self.state == "match" and time.time() < self.match_ready_at:
                     self.window_controller.keys_up(list("wasd"))
