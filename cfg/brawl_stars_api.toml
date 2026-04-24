@@ -1,15 +1,13 @@
 # Fill this file to import current brawler trophies from the official Brawl Stars API.
-# Create an API token at https://developer.brawlstars.com/ and allow your current public IP.
+# PylaAI auto-refreshes the API token for your current public IP.
 
-# Manual mode:
-api_token = ""
+# Account to track. You can also set this in the Hub as "Player Tag".
 player_tag = "#YOURTAG"
 timeout_seconds = 15
 
-# Auto-refresh mode for changing public IPs.
-# When enabled, PylaAI logs in to the official developer portal, gets your current public IP,
-# deletes previous PylaAI-created keys, creates a fresh key for that IP, and saves api_token.
-auto_refresh_token = false
+# Auto-refresh setup.
+# Create a developer account at https://developer.brawlstars.com/ and fill these login fields.
+auto_refresh_token = true
 developer_email = ""
 developer_password = ""
 public_ip_service = "https://api.ipify.org"

@@ -227,8 +227,8 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
     cleaned_tag = str(player_tag).strip().upper()
     if not api_token:
         raise ValueError(
-            "Missing api_token in cfg/brawl_stars_api.toml. Fill api_token manually, "
-            "or enable auto_refresh_token and fill developer_email/developer_password."
+            "Missing Brawl Stars API token. Enable auto_refresh_token and fill "
+            "developer_email/developer_password in cfg/brawl_stars_api.toml."
         )
     if not cleaned_tag or cleaned_tag == "#YOURTAG":
         raise ValueError(
@@ -256,7 +256,8 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
 def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
     try:
         config = load_toml_as_dict(file_path)
-        if not str(config.get("player_tag", "")).strip():
+        player_tag = str(config.get("player_tag", "")).strip()
+        if not player_tag or player_tag.upper() == "#YOURTAG":
             config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
         return refresh_brawl_stars_api_token_if_enabled(config, file_path)
     except toml.TomlDecodeError:
@@ -266,6 +267,7 @@ def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
         return {
             "player_tag": str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip(),
             "timeout_seconds": 15,
+            "auto_refresh_token": True,
         }
 
     with open(file_path, "r", encoding="utf-8-sig") as f:
@@ -281,12 +283,19 @@ def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
         config["player_tag"] = tag_match.group(1).strip()
     else:
         config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
+    if not config["player_tag"] or config["player_tag"].upper() == "#YOURTAG":
+        config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
 
     timeout_match = re.search(r"timeout_seconds\s*=\s*(\d+)", text)
     if timeout_match:
         config["timeout_seconds"] = int(timeout_match.group(1))
     else:
         config["timeout_seconds"] = 15
+
+    auto_refresh_match = re.search(r"auto_refresh_token\s*=\s*(true|false)", text, re.IGNORECASE)
+    config["auto_refresh_token"] = (
+        auto_refresh_match.group(1).lower() == "true" if auto_refresh_match else True
+    )
 
     return refresh_brawl_stars_api_token_if_enabled(config, file_path)
 

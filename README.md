@@ -42,18 +42,15 @@ Manual developer setup:
 - Run `python main.py`.
 
 Brawl Stars API trophy autofill :
-- Create an official Brawl Stars API token at https://developer.brawlstars.com/
-- The token must allow your current public IP address.
+- Create a developer account at https://developer.brawlstars.com/
 - Open `cfg/brawl_stars_api.toml`.
 - Fill in:
-  `api_token = "YOUR_API_TOKEN"`
   `player_tag = "#YOURTAG"`
-- When you click a brawler in the brawler selection window, the Current Trophies field is filled from the API automatically.
-- If your public IP changes often, enable auto-refresh in `cfg/brawl_stars_api.toml`:
-  `auto_refresh_token = true`
   `developer_email = "YOUR_DEVELOPER_EMAIL"`
   `developer_password = "YOUR_DEVELOPER_PASSWORD"`
-- Auto-refresh logs in to the official developer portal, detects the current public IP, deletes old PylaAI-created keys, creates a fresh key for that IP, and saves it as `api_token`.
+- You can also set the player tag in the Hub under Additional Settings.
+- When you click a brawler in the brawler selection window, the Current Trophies field is filled from the API automatically.
+- Auto-refresh logs in to the official developer portal, detects the current public IP, deletes old PylaAI-created keys, creates a fresh key for that IP, and saves the generated token locally.
 - Keep `delete_all_tokens = false` unless you really want every key on the developer account deleted.
 - Do not share a filled `cfg/brawl_stars_api.toml`; the committed file should keep tokens, email, and password blank.
 
