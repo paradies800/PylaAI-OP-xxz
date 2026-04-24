@@ -24,7 +24,9 @@ class TestLobbyAutomation(unittest.TestCase):
         expected_brawler_y = 978
         tolerance = 50
 
-        mock_extract_text.return_value = {"shelly": {"center": (1307, 636)}}
+        # The project config uses ocr_scale_down_factor = 0.5, so these are
+        # scaled-down OCR coordinates for the expected full-size click.
+        mock_extract_text.return_value = {"shelly": {"center": (1006, 536)}}
 
         test_image = np.array(Image.open("./tests/assets/brawlers_menu.PNG"))
         self.mock_window_controller.screenshot.return_value = test_image

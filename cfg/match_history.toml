@@ -4,9 +4,9 @@ victory = 83
 draw = 45
 
 [total]
-defeat = 1
-victory = 7
-draw = 3
+defeat = 0
+victory = 1
+draw = 2
 
 [squeak]
 defeat = 18
@@ -17,3 +17,368 @@ draw = 22
 defeat = 1
 victory = 7
 draw = 4
+
+[kit]
+defeat = 0
+victory = 1
+draw = 2
+
+[ziggy]
+defeat = 0
+victory = 0
+draw = 0
+
+[angelo]
+defeat = 0
+victory = 0
+draw = 0
+
+[pearl]
+defeat = 0
+victory = 0
+draw = 0
+
+[clancy]
+defeat = 0
+victory = 0
+draw = 0
+
+[shade]
+defeat = 0
+victory = 0
+draw = 0
+
+[meeple]
+defeat = 0
+victory = 0
+draw = 0
+
+[lily]
+defeat = 0
+victory = 0
+draw = 0
+
+[finx]
+defeat = 0
+victory = 0
+draw = 0
+
+[berry]
+defeat = 0
+victory = 0
+draw = 0
+
+[mandy]
+defeat = 0
+victory = 0
+draw = 0
+
+[maisie]
+defeat = 0
+victory = 0
+draw = 0
+
+[hank]
+defeat = 0
+victory = 0
+draw = 0
+
+[amber]
+defeat = 0
+victory = 0
+draw = 0
+
+[trunk]
+defeat = 0
+victory = 0
+draw = 0
+
+[sandy]
+defeat = 0
+victory = 0
+draw = 0
+
+[chuck]
+defeat = 0
+victory = 0
+draw = 0
+
+[lumi]
+defeat = 0
+victory = 0
+draw = 0
+
+[willow]
+defeat = 0
+victory = 0
+draw = 0
+
+[draco]
+defeat = 0
+victory = 0
+draw = 0
+
+[rt]
+defeat = 0
+victory = 0
+draw = 0
+
+[mico]
+defeat = 0
+victory = 0
+draw = 0
+
+[buster]
+defeat = 0
+victory = 0
+draw = 0
+
+[gray]
+defeat = 0
+victory = 0
+draw = 0
+
+[kenji]
+defeat = 0
+victory = 0
+draw = 0
+
+[larrylawrie]
+defeat = 0
+victory = 0
+draw = 0
+
+[meg]
+defeat = 0
+victory = 0
+draw = 0
+
+[sam]
+defeat = 0
+victory = 0
+draw = 0
+
+[bonnie]
+defeat = 0
+victory = 0
+draw = 0
+
+[cordelius]
+defeat = 0
+victory = 0
+draw = 0
+
+[otis]
+defeat = 0
+victory = 0
+draw = 0
+
+[gus]
+defeat = 0
+victory = 0
+draw = 0
+
+[nita]
+defeat = 0
+victory = 0
+draw = 0
+
+[pam]
+defeat = 0
+victory = 0
+draw = 0
+
+[lou]
+defeat = 0
+victory = 0
+draw = 0
+
+[bull]
+defeat = 0
+victory = 0
+draw = 0
+
+[spike]
+defeat = 0
+victory = 0
+draw = 0
+
+[jacky]
+defeat = 0
+victory = 0
+draw = 0
+
+[belle]
+defeat = 0
+victory = 0
+draw = 0
+
+[colt]
+defeat = 0
+victory = 0
+draw = 0
+
+[colette]
+defeat = 0
+victory = 0
+draw = 0
+
+[ruffs]
+defeat = 0
+victory = 0
+draw = 0
+
+[ash]
+defeat = 0
+victory = 0
+draw = 0
+
+[byron]
+defeat = 0
+victory = 0
+draw = 0
+
+[grom]
+defeat = 0
+victory = 0
+draw = 0
+
+[jessie]
+defeat = 0
+victory = 0
+draw = 0
+
+[lola]
+defeat = 0
+victory = 0
+draw = 0
+
+[rosa]
+defeat = 0
+victory = 0
+draw = 0
+
+[gale]
+defeat = 0
+victory = 0
+draw = 0
+
+[nani]
+defeat = 0
+victory = 0
+draw = 0
+
+[bea]
+defeat = 0
+victory = 0
+draw = 0
+
+[mrp]
+defeat = 0
+victory = 0
+draw = 0
+
+[barley]
+defeat = 0
+victory = 0
+draw = 0
+
+[emz]
+defeat = 0
+victory = 0
+draw = 0
+
+[griff]
+defeat = 0
+victory = 0
+draw = 0
+
+[brock]
+defeat = 0
+victory = 0
+draw = 0
+
+[janet]
+defeat = 0
+victory = 0
+draw = 0
+
+[poco]
+defeat = 0
+victory = 0
+draw = 0
+
+[carl]
+defeat = 0
+victory = 0
+draw = 0
+
+[tick]
+defeat = 0
+victory = 0
+draw = 0
+
+[crow]
+defeat = 0
+victory = 0
+draw = 0
+
+[sprout]
+defeat = 0
+victory = 0
+draw = 0
+
+[dynamike]
+defeat = 0
+victory = 0
+draw = 0
+
+[8bit]
+defeat = 0
+victory = 0
+draw = 0
+
+[shelly]
+defeat = 0
+victory = 0
+draw = 0
+
+[edgar]
+defeat = 0
+victory = 0
+draw = 0
+
+[max]
+defeat = 0
+victory = 0
+draw = 0
+
+[leon]
+defeat = 0
+victory = 0
+draw = 0
+
+[penny]
+defeat = 0
+victory = 0
+draw = 0
+
+[piper]
+defeat = 0
+victory = 0
+draw = 0
+
+[frank]
+defeat = 0
+victory = 0
+draw = 0
+
+[gene]
+defeat = 0
+victory = 0
+draw = 0
+
+[stu]
+defeat = 0
+victory = 0
+draw = 0

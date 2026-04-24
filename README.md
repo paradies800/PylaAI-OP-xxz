@@ -41,10 +41,6 @@ Manual developer setup:
 - Run `python setup.py install`.
 - Run `python main.py`.
 
-Startup DLL error:
-- If the launcher shows `onnxruntime_pybind11_state` or `DLL load failed`, run `setup.exe` once to repair the Python packages.
-- If it still fails, install Microsoft Visual C++ Redistributable 2015-2022 x64 from `https://aka.ms/vs/17/release/vc_redist.x64.exe`, restart Windows, then run PylaAI again.
-
 Brawl Stars API trophy autofill :
 - Create an official Brawl Stars API token at https://developer.brawlstars.com/
 - The token must allow your current public IP address.
