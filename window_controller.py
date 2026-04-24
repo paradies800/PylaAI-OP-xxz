@@ -1,5 +1,8 @@
 import atexit
+import glob
 import math
+import os
+import subprocess
 import socket
 import threading
 import time
@@ -38,6 +41,20 @@ EMULATOR_PORTS = {
 }
 
 SUPPORTED_EMULATORS = tuple(EMULATOR_PORTS.keys())
+
+COMMON_LDPLAYER_CONSOLES = [
+    r"C:\LDPlayer\LDPlayer9\dnconsole.exe",
+    r"C:\LDPlayer\LDPlayer4.0\dnconsole.exe",
+    r"C:\Program Files\LDPlayer\LDPlayer9\dnconsole.exe",
+    r"C:\Program Files\LDPlayer\LDPlayer4.0\dnconsole.exe",
+    r"C:\Program Files (x86)\LDPlayer\LDPlayer9\dnconsole.exe",
+    r"C:\Program Files (x86)\LDPlayer\LDPlayer4.0\dnconsole.exe",
+]
+
+COMMON_MUMU_MANAGERS = [
+    r"C:\Program Files\Netease\MuMuPlayer\nx_main\MuMuManager.exe",
+    r"C:\Program Files (x86)\Netease\MuMuPlayer\nx_main\MuMuManager.exe",
+]
 
 
 def _infer_supported_emulator(configured_port):
@@ -85,6 +102,40 @@ def _serial_port(serial):
         except ValueError:
             return None
     return None
+
+
+def _find_existing_path(paths):
+    for path in paths:
+        expanded = os.path.expandvars(path)
+        matches = glob.glob(expanded)
+        for match in matches:
+            if os.path.exists(match):
+                return match
+    return None
+
+
+def _infer_ldplayer_index(port):
+    if port in (5555, 5554):
+        return 0
+    if port and port >= 5557 and (port - 5555) % 2 == 0:
+        return max(0, (port - 5555) // 2)
+    return 0
+
+
+def _infer_mumu_index(port):
+    if port in (16384, 7555, 5555, 5554):
+        return 0
+    if port and port >= 16384 and (port - 16384) % 32 == 0:
+        return max(0, (port - 16384) // 32)
+    return 0
+
+
+def _config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 class WindowController:
@@ -150,6 +201,10 @@ class WindowController:
             general_config = load_toml_as_dict("cfg/general_config.toml")
             selected_emulator = general_config.get("current_emulator", "LDPlayer")
             configured_port = general_config.get("emulator_port", 0)
+            try:
+                configured_port = int(configured_port)
+            except (TypeError, ValueError):
+                configured_port = 0
             self.brawl_stars_package = str(
                 general_config.get("brawl_stars_package", BRAWL_STARS_PACKAGE)
             ).strip()
@@ -160,6 +215,15 @@ class WindowController:
             self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 15))
             if self.scrcpy_max_fps <= 0:
                 self.scrcpy_max_fps = None
+            self.selected_emulator = selected_emulator
+            self.configured_port = configured_port
+            self.configured_serial = f"127.0.0.1:{configured_port}" if configured_port else ""
+            self.emulator_autorestart = _config_bool(general_config.get("emulator_autorestart", True), True)
+            self.emulator_profile_index_is_auto = str(
+                general_config.get("emulator_profile_index", "auto")
+            ).strip().lower() == "auto"
+            self.emulator_profile_index = self._resolve_emulator_profile_index(general_config)
+            self.emulator_launch_command = self._resolve_emulator_launch_command(general_config)
             all_supported_ports = []
             for emulator_name in SUPPORTED_EMULATORS:
                 all_supported_ports.extend(EMULATOR_PORTS[emulator_name])
@@ -187,6 +251,12 @@ class WindowController:
                 device_list = list_online_devices()
                 preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
 
+            if not preferred_devices and self.emulator_autorestart:
+                print("Selected emulator profile is not online; trying to launch it.")
+                self.launch_saved_emulator_profile(wait_for_device=True)
+                device_list = list_online_devices()
+                preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
+
             if not device_list:
                 tried_ports = ", ".join(str(port) for port in candidate_ports)
                 raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
@@ -201,6 +271,8 @@ class WindowController:
                     f"using the best online LDPlayer/MuMu ADB device instead."
                 )
             print(f"Connected to {selected_emulator}: {self.device.serial}")
+            self.connected_serial = self.device.serial
+            self.sync_restart_target_to_connected_device()
 
             self.frame_lock = threading.Lock()
             self.scrcpy_client = None
@@ -223,7 +295,215 @@ class WindowController:
         self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
         self.time_since_checked_if_brawl_stars_crashed = time.time()
 
+    def _resolve_emulator_profile_index(self, general_config):
+        configured_index = general_config.get("emulator_profile_index", "auto")
+        if str(configured_index).strip().lower() != "auto":
+            try:
+                return int(configured_index)
+            except (TypeError, ValueError):
+                print(f"Invalid emulator_profile_index '{configured_index}', falling back to port mapping.")
+
+        if self.selected_emulator == "MuMu":
+            return _infer_mumu_index(self.configured_port)
+        return _infer_ldplayer_index(self.configured_port)
+
+    def _resolve_emulator_launch_command(self, general_config):
+        custom_command = str(general_config.get("emulator_launch_command", "")).strip()
+        if custom_command:
+            return custom_command
+
+        if self.selected_emulator == "MuMu":
+            manager_path = str(general_config.get("mumu_manager_path", "")).strip()
+            if not manager_path:
+                manager_path = _find_existing_path(COMMON_MUMU_MANAGERS)
+            if manager_path:
+                return [manager_path, "control", "--vmindex", str(self.emulator_profile_index), "launch"]
+            return None
+
+        console_path = str(general_config.get("ldplayer_console_path", "")).strip()
+        if not console_path:
+            console_path = _find_existing_path(COMMON_LDPLAYER_CONSOLES)
+        if console_path:
+            return [console_path, "launch", "--index", str(self.emulator_profile_index)]
+        return None
+
+    def sync_restart_target_to_connected_device(self):
+        connected_port = _serial_port(self.connected_serial)
+        if connected_port is None:
+            return
+
+        self.configured_port = connected_port
+        self.configured_serial = self.connected_serial
+
+        if not self.emulator_profile_index_is_auto:
+            print(
+                f"Auto-restart target locked to explicit {self.selected_emulator} "
+                f"profile {self.emulator_profile_index} for ADB {self.configured_serial}."
+            )
+            return
+
+        previous_index = self.emulator_profile_index
+        if self.selected_emulator == "MuMu":
+            self.emulator_profile_index = _infer_mumu_index(connected_port)
+        else:
+            self.emulator_profile_index = _infer_ldplayer_index(connected_port)
+
+        if self.emulator_profile_index != previous_index:
+            print(
+                f"Auto-restart target updated from {self.selected_emulator} profile {previous_index} "
+                f"to profile {self.emulator_profile_index} because the bot connected to {self.connected_serial}."
+            )
+        else:
+            print(
+                f"Auto-restart target is {self.selected_emulator} profile {self.emulator_profile_index} "
+                f"for ADB {self.configured_serial}."
+            )
+
+    def _emulator_command_for(self, action):
+        if not self.emulator_launch_command:
+            return None
+        if not isinstance(self.emulator_launch_command, list):
+            return self.emulator_launch_command
+
+        executable = self.emulator_launch_command[0]
+        if self.selected_emulator == "MuMu":
+            mumu_action = "restart" if action == "restart" else "launch"
+            return [executable, "control", "--vmindex", str(self.emulator_profile_index), mumu_action]
+
+        ld_action = {
+            "launch": "launch",
+            "restart": "reboot",
+            "shutdown": "quit",
+        }.get(action, "launch")
+        return [executable, ld_action, "--index", str(self.emulator_profile_index)]
+
+    def run_emulator_command(self, action, wait=True):
+        command = self._emulator_command_for(action)
+        if not command:
+            print(
+                f"Cannot auto-restart {self.selected_emulator}: launcher path was not found. "
+                "Set emulator_launch_command, mumu_manager_path, or ldplayer_console_path in cfg/general_config.toml."
+            )
+            return False
+
+        print(
+            f"{action.capitalize()}ing {self.selected_emulator} profile {self.emulator_profile_index} "
+            f"for ADB {self.configured_serial or 'auto'}."
+        )
+        try:
+            if wait and isinstance(command, list):
+                completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                stdout = completed.stdout.strip()
+                stderr = completed.stderr.strip()
+                if stdout:
+                    print(f"{self.selected_emulator} launcher: {stdout}")
+                if stderr:
+                    print(f"{self.selected_emulator} launcher error: {stderr}")
+                if completed.returncode != 0:
+                    print(f"{self.selected_emulator} launcher exited with code {completed.returncode}.")
+                    return False
+                return True
+
+            if isinstance(command, list):
+                subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as e:
+            print(f"Could not run emulator {action} command: {e}")
+            return False
+
+    def launch_saved_emulator_profile(self, wait_for_device=False, action="launch"):
+        if not self.run_emulator_command(action, wait=wait_for_device):
+            return False
+
+        if not wait_for_device:
+            return True
+        return self.wait_for_saved_device()
+
+    def wait_for_saved_device(self, timeout=120):
+        deadline = time.time() + timeout
+        expected_serials = [
+            serial for serial in (
+                getattr(self, "connected_serial", ""),
+                self.configured_serial,
+            ) if serial
+        ]
+        while time.time() < deadline:
+            if self.configured_serial:
+                try:
+                    adb.connect(self.configured_serial)
+                except Exception:
+                    pass
+
+            try:
+                for device in adb.device_list():
+                    if device.get_state() != "device":
+                        continue
+                    if device.serial in expected_serials or _serial_port(device.serial) == self.configured_port:
+                        self.device = device
+                        self.connected_serial = device.serial
+                        self.sync_restart_target_to_connected_device()
+                        print(f"Reconnected to emulator ADB device: {device.serial}")
+                        return True
+            except Exception:
+                pass
+
+            try:
+                serial = expected_serials[0] if expected_serials else None
+                device = adb.device(serial=serial)
+                if device.get_state() == "device":
+                    self.device = device
+                    self.connected_serial = device.serial
+                    self.sync_restart_target_to_connected_device()
+                    print(f"Reconnected to emulator ADB device: {device.serial}")
+                    return True
+            except Exception:
+                pass
+            time.sleep(2)
+        print("Timed out waiting for emulator ADB device to come back online.")
+        return False
+
+    def ensure_emulator_online(self):
+        try:
+            if self.device.get_state() == "device":
+                return True
+        except Exception as e:
+            print(f"ADB device is not reachable: {e}")
+
+        if not self.emulator_autorestart:
+            return False
+
+        self.restart_emulator_profile()
+        return True
+
+    def restart_emulator_profile(self):
+        print(f"{self.selected_emulator} appears to be down; restarting the saved emulator profile.")
+        try:
+            self.keys_up(list("wasd"))
+        except Exception:
+            pass
+        old_client = getattr(self, "scrcpy_client", None)
+        if old_client is not None:
+            try:
+                old_client.stop()
+            except Exception as e:
+                print(f"Could not stop scrcpy before emulator restart: {e}")
+        self.scrcpy_client = None
+        if not self.launch_saved_emulator_profile(wait_for_device=True, action="restart"):
+            print("Emulator restart did not bring the profile online; trying explicit launch.")
+            if not self.launch_saved_emulator_profile(wait_for_device=True, action="launch"):
+                raise ConnectionError("Could not restart emulator profile.")
+        time.sleep(3)
+        self.start_scrcpy_client()
+        self.device.app_start(self.brawl_stars_package)
+        time.sleep(3)
+        self.time_since_checked_if_brawl_stars_crashed = time.time()
+        print("Emulator profile restarted and Brawl Stars launched.")
+
     def start_scrcpy_client(self):
+        self.ensure_emulator_online()
+
         def on_frame(frame):
             if frame is not None:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -250,6 +530,7 @@ class WindowController:
 
     def restart_scrcpy_client(self):
         print("Restarting scrcpy client...")
+        self.ensure_emulator_online()
         old_client = self.scrcpy_client
         self.scrcpy_client = None
         if old_client is not None:
@@ -279,7 +560,12 @@ class WindowController:
             return self.frame_id
 
     def restart_brawl_stars(self):
-        self.device.app_stop(self.brawl_stars_package)
+        self.ensure_emulator_online()
+        try:
+            self.device.app_stop(self.brawl_stars_package)
+        except Exception as e:
+            print(f"Could not stop Brawl Stars cleanly: {e}")
+            self.restart_emulator_profile()
         time.sleep(1)
         self.device.app_start(self.brawl_stars_package)
         time.sleep(3)
@@ -287,12 +573,23 @@ class WindowController:
         print("Brawl stars restarted successfully.")
 
     def screenshot(self):
+        if not self.ensure_emulator_online():
+            raise ConnectionError("Emulator is offline and auto-restart is disabled.")
         c_time = time.time()
         if c_time - self.time_since_checked_if_brawl_stars_crashed > self.check_if_brawl_stars_crashed_timer:
-            opened_app = self.device.app_current().package.strip()
+            try:
+                opened_app = self.device.app_current().package.strip()
+            except Exception as e:
+                print(f"Could not query foreground app, emulator may have crashed: {e}")
+                self.restart_emulator_profile()
+                opened_app = self.device.app_current().package.strip()
             if opened_app != self.brawl_stars_package:
                 print(f"Brawl stars has crashed, {opened_app} is the app opened ! Restarting...")
-                self.device.app_start(self.brawl_stars_package)
+                try:
+                    self.device.app_start(self.brawl_stars_package)
+                except Exception as e:
+                    print(f"Could not start Brawl Stars, restarting emulator profile: {e}")
+                    self.restart_emulator_profile()
                 time.sleep(3)
                 self.time_since_checked_if_brawl_stars_crashed = time.time()
             else:
