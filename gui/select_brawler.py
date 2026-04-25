@@ -15,7 +15,6 @@ from utils import (
     normalize_brawler_name,
     save_brawler_icon,
     get_dpi_scale,
-    save_dict_as_toml,
 )
 from tkinter import filedialog
 
@@ -65,6 +64,9 @@ class SelectBrawler:
         self.farm_type = ""
         self.api_trophies_by_brawler = None
         self.api_trophy_error_reported = False
+        self._filter_after_id = None
+        self._image_render_after_id = None
+        self._current_filter_text = None
         api_trophies = self.get_api_trophies_by_brawler()
         if api_trophies:
             self.brawlers = [brawler for brawler in self.brawlers if brawler in api_trophies]
@@ -90,7 +92,7 @@ class SelectBrawler:
         ctk.CTkLabel(self.app, text="Write brawler", font=("Comic sans MS", int(20 * scale_factor)),
                      text_color=self.colors['cherry red']).place(x=int(scale_factor * 373), y=int(scale_factor * 20))
         self.filter_entry.place(x=int(340 * scale_factor), y=int(scale_factor * 52))
-        self.filter_var.trace_add("write", lambda *args: self.update_images(self.filter_var.get()))
+        self.filter_var.trace_add("write", lambda *args: self.queue_image_filter_update())
 
         # Frame to hold the images
         self.image_frame = ctk.CTkScrollableFrame(
@@ -113,21 +115,19 @@ class SelectBrawler:
                       border_width=int(2 * scale_factor)).place(x=int(10 * scale_factor),
                                                                 y=int((window_height-60* scale_factor) ))
 
-        self.timer_var = tk.StringVar()
-        self.timer_entry = ctk.CTkEntry(
-            self.app, textvariable=self.timer_var,
-            placeholder_text="Enter an amount of minutes", font=("", int(20 * scale_factor)), width=int(80 * scale_factor),
-            fg_color=self.colors['ui box gray'], border_color=self.colors['cherry red'], text_color="white"
-        )
-        ctk.CTkLabel(self.app, text="Run for :", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 580), y=int((window_height-55* scale_factor) ))
-        self.timer_entry.place(x=int(scale_factor * 675), y=int((window_height-55* scale_factor) ))
-        self.timer_var.set(load_toml_as_dict("cfg/general_config.toml")["run_for_minutes"])
-        self.timer_var.trace_add("write", lambda *args: self.update_timer(self.timer_var.get()))
-        ctk.CTkLabel(self.app, text="minutes", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 760), y=int((window_height-55* scale_factor) ))
 
         self.app.mainloop()
+
+    def queue_image_filter_update(self):
+        if self._filter_after_id is not None:
+            try:
+                self.app.after_cancel(self._filter_after_id)
+            except Exception:
+                pass
+        self._filter_after_id = self.app.after(
+            120,
+            lambda: self.update_images(self.filter_var.get())
+        )
 
     def set_farm_type(self, value):
         self.farm_type = value
@@ -137,6 +137,15 @@ class SelectBrawler:
         self.close_app()
 
     def close_app(self):
+        for after_id in (self._filter_after_id, self._image_render_after_id):
+            if after_id is None:
+                continue
+            try:
+                self.app.after_cancel(after_id)
+            except Exception:
+                pass
+        self._filter_after_id = None
+        self._image_render_after_id = None
         try:
             for after_id in self.app.tk.call("after", "info"):
                 try:
@@ -577,34 +586,45 @@ class SelectBrawler:
 
 
     def update_images(self, filter_text):
+        filter_text = (filter_text or "").strip().lower()
+        if filter_text == self._current_filter_text:
+            return
+        self._current_filter_text = filter_text
+        if self._image_render_after_id is not None:
+            try:
+                self.app.after_cancel(self._image_render_after_id)
+            except Exception:
+                pass
+            self._image_render_after_id = None
         self.visible_image_labels = []
         for widget in self.image_frame.winfo_children():
             widget.destroy()
 
-        row_num = 0
-        col_num = 0
+        matches = [
+            (brawler, img_tk)
+            for brawler, img_tk in self.images
+            if brawler.startswith(filter_text)
+        ]
 
-        for brawler, img_tk in self.images:
-            if brawler.startswith(filter_text.lower()):
+        def render_batch(start_index=0):
+            for index in range(start_index, min(start_index + 16, len(matches))):
+                brawler, img_tk = matches[index]
+                row_num = index // 10
+                col_num = index % 10
                 label = ctk.CTkLabel(self.image_frame, image=img_tk, text="")
                 label._pyla_image_ref = img_tk
                 self.visible_image_labels.append(label)
                 label.bind("<Button-1>", lambda e, b=brawler: self.on_image_click(b))  # Bind click event
                 label.grid(row=row_num, column=col_num, padx=int(5 * scale_factor), pady=int(3 * scale_factor))
+            next_index = start_index + 16
+            if next_index < len(matches):
+                self._image_render_after_id = self.app.after(1, lambda: render_batch(next_index))
+            else:
+                self._image_render_after_id = None
 
-                col_num += 1
-                if col_num == 10:  # Move to the next row after 10 columns
-                    col_num = 0
-                    row_num += 1
+        render_batch()
 
-    def update_timer(self, value):
-        try:
-            minutes = int(value)
-            config = load_toml_as_dict("cfg/general_config.toml")
-            config['run_for_minutes'] = minutes
-            save_dict_as_toml(config, "cfg/general_config.toml", )
-        except ValueError:
-            pass  # Ignore invalid input
 
 def dummy_data_setter(data):
     print("Data set:", data)
+
