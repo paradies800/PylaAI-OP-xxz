@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import requests
 
-from state_finder import get_state, find_game_result, get_star_drop_type
+from state_finder import get_state, find_game_result, get_star_drop_type, is_in_prestige_reward
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
     save_brawler_data
@@ -86,6 +86,7 @@ class StageManager:
             'end_4th': self.end_game,
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
+            'prestige_reward': self.handle_prestige_reward,
             'trophy_reward': lambda: self.window_controller.press_key("Q")
         }
 
@@ -194,6 +195,59 @@ class StageManager:
             self.window_controller.press_key("Q", 10)
         else:
             self.window_controller.press_key("Q")
+
+    def advance_to_next_brawler_after_prestige(self):
+        if not self.brawlers_pick_data:
+            return False
+        current_brawler = self.brawlers_pick_data[0].get("brawler", "current")
+        print(f"Prestige reward detected for {current_brawler}; treating current brawler as completed.")
+        self.brawlers_pick_data[0]["trophies"] = max(1000, int(self.brawlers_pick_data[0].get("trophies") or 0))
+        self.brawlers_pick_data[0]["push_until"] = max(1000, int(self.brawlers_pick_data[0].get("push_until") or 1000))
+
+        if len(self.brawlers_pick_data) <= 1:
+            print("Prestige reward reached, but no next brawler is queued.")
+            save_brawler_data(self.brawlers_pick_data)
+            return False
+
+        self.brawlers_pick_data.pop(0)
+        next_data = self.brawlers_pick_data[0]
+        self.Trophy_observer.change_trophies(next_data.get("trophies", 0))
+        self.Trophy_observer.current_wins = next_data.get("wins", 0) if next_data.get("wins", "") != "" else 0
+        self.Trophy_observer.win_streak = next_data.get("win_streak", 0)
+        save_brawler_data(self.brawlers_pick_data)
+        return True
+
+    def handle_prestige_reward(self):
+        screenshot = self.window_controller.screenshot()
+        if not is_in_prestige_reward(cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)):
+            print("Prestige reward state ignored; NEXT button was not confirmed.")
+            return
+
+        print("Prestige reward screen detected; clicking NEXT.")
+        self.window_controller.keys_up(list("wasd"))
+        self.window_controller.click(
+            int(1410 * self.window_controller.width_ratio),
+            int(990 * self.window_controller.height_ratio),
+        )
+        time.sleep(1.0)
+
+        if not self.advance_to_next_brawler_after_prestige():
+            self.window_controller.press_key("Q")
+            return
+
+        current_state = get_state(self.window_controller.screenshot())
+        attempts = 0
+        while current_state != "lobby" and attempts < 30:
+            self.window_controller.press_key("Q")
+            time.sleep(1.0)
+            current_state = get_state(self.window_controller.screenshot())
+            attempts += 1
+
+        if current_state != "lobby":
+            print("Could not reach lobby after prestige reward; will retry from normal state loop.")
+            return
+
+        self.Lobby_automation.select_lowest_trophy_brawler()
 
     def end_game(self):
         screenshot = self.window_controller.screenshot()

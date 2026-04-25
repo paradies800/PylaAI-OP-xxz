@@ -105,6 +105,21 @@ class LobbyAutomation:
                   f"The bot will continue with the currently selected brawler.")
             raise ValueError(f"Brawler '{brawler}' could not be found in the brawler selection menu.")
 
+    def select_lowest_trophy_brawler(self):
+        wr = self.window_controller.width_ratio
+        hr = self.window_controller.height_ratio
+
+        def tap(x, y, wait=0.6):
+            self.window_controller.click(int(x * wr), int(y * hr))
+            time.sleep(wait)
+
+        print("Selecting next brawler by sorting lowest trophies.")
+        tap(128, 500, 1.4)   # left Brawlers button in lobby
+        tap(1210, 45, 0.6)   # sort dropdown
+        tap(1210, 426, 1.0)  # Least Trophies
+        tap(422, 359, 1.0)   # first brawler card
+        tap(260, 991, 1.0)   # Select
+
     @staticmethod
     def resolve_ocr_typos(potential_brawler_name: str) -> str:
         """
