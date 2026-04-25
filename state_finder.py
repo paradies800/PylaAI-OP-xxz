@@ -13,6 +13,7 @@ images_with_star_drop = []
 for file in os.listdir(star_drops_path):
     if "star_drop" in file:
         images_with_star_drop.append(file)
+images_with_star_drop.sort(key=lambda name: 0 if name in ("angelic_star_drop.png", "demonic_star_drop.png") else 1)
 
 end_results_path = r"./images/end_results/"
 
@@ -165,10 +166,18 @@ def is_in_star_road(image):
 
 
 def is_in_star_drop(image):
-    for image_filename in images_with_star_drop: #kept getting errors so tried changing from image to image_filename
+    return get_star_drop_type(image) is not None
+
+
+def get_star_drop_type(image):
+    for image_filename in images_with_star_drop:
         if is_template_in_region(image, star_drops_path + image_filename, region_data['star_drop']):
-            return True
-    return False
+            if image_filename == "angelic_star_drop.png":
+                return "angelic"
+            if image_filename == "demonic_star_drop.png":
+                return "demonic"
+            return "standard"
+    return None
 
 def get_state(screenshot):
     global _last_printed_state
@@ -180,4 +189,3 @@ def get_state(screenshot):
         print(f"State: {state}")
         _last_printed_state = state
     return state
-

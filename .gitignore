@@ -2,6 +2,7 @@
 /.idea
 *.pyc
 cfg/match_history.toml
+cfg/adaptive_state.json
 latest_brawler_data.json
 cfg/match_history.toml
 test.py

@@ -8,10 +8,11 @@ import cv2
 import numpy as np
 import requests
 
-from state_finder import get_state, find_game_result
+from state_finder import get_state, find_game_result, get_star_drop_type
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
     save_brawler_data
+from adaptive_brain import AdaptiveBrain
 
 user_id = load_toml_as_dict("cfg/general_config.toml")['discord_id']
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
@@ -54,6 +55,11 @@ class StageManager:
         self.brawlers_pick_data = brawlers_data
         brawler_list = [brawler["brawler"] for brawler in brawlers_data]
         self.Trophy_observer = TrophyObserver(brawler_list)
+        bot_config = load_toml_as_dict("cfg/bot_config.toml")
+        adaptive_enabled = str(bot_config.get("adaptive_brain_enabled", "yes")).lower() in ("yes", "true", "1")
+        adaptive_window = int(bot_config.get("adaptive_brain_window", 20))
+        self.adaptive_brain = AdaptiveBrain(enabled=adaptive_enabled, window_size=adaptive_window)
+        print(self.adaptive_brain.summary())
         self.time_since_last_stat_change = time.time()
         # Guards against recording trophies twice when end_game() is re-entered
         # on the same end-of-match screen (e.g. because the dismiss button
@@ -170,8 +176,22 @@ class StageManager:
         self.window_controller.press_key("Q")
         print("Pressed Q to start a match")
     def click_star_drop(self):
+        screenshot = self.window_controller.screenshot()
+        star_drop_type = get_star_drop_type(cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
+        if star_drop_type in ("angelic", "demonic"):
+            print(f"{star_drop_type.capitalize()} star drop detected; forcing long press.")
+            self.window_controller.press_key("Q", 10)
+            return
+
+        if star_drop_type == "standard":
+            print("Standard star drop detected; fast tapping.")
+            for _ in range(5):
+                self.window_controller.press_key("Q")
+                time.sleep(0.08)
+            return
+
         if self.long_press_star_drop == "yes":
-            self.window_controller.press_key("Q",10)
+            self.window_controller.press_key("Q", 10)
         else:
             self.window_controller.press_key("Q")
 
@@ -198,6 +218,7 @@ class StageManager:
                 current_brawler = self.brawlers_pick_data[0]['brawler']
                 self.Trophy_observer.add_trophies(found_game_result, current_brawler)
                 self.Trophy_observer.add_win(found_game_result)
+                self.adaptive_brain.record_result(found_game_result)
                 self.time_since_last_stat_change = time.time()
                 self.last_recorded_result = found_game_result
                 self.last_recorded_result_time = time.time()

@@ -972,6 +972,16 @@ class WindowController:
         target_y = y * self.height_ratio
         self.click(target_x, target_y, delay, touch_up=touch_up, touch_down=touch_down)
 
+    def aim_attack_angle(self, angle_degrees: float, radius: float = 170.0, duration: float = 0.04):
+        x, y = key_coords_dict["M"]
+        start_x = x * self.width_ratio
+        start_y = y * self.height_ratio
+        scaled_radius = radius * self.scale_factor
+        angle_rad = math.radians(angle_degrees)
+        end_x = start_x + math.cos(angle_rad) * scaled_radius
+        end_y = start_y + math.sin(angle_rad) * scaled_radius
+        self.swipe(start_x, start_y, end_x, end_y, duration=duration)
+
     def swipe(self, start_x, start_y, end_x, end_y, duration=0.2):
         dist_x = end_x - start_x
         dist_y = end_y - start_y

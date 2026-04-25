@@ -91,6 +91,17 @@ class Movement:
             "arc_side": 1,            # +1 = CCW, -1 = CW; flipped each trigger
         }
         self._next_arc_side = 1
+        self.adaptive_safe_range_multiplier = 1.0
+        self.strafe_enabled = str(bot_config.get("strafe_while_attacking", "yes")).lower() in ("yes", "true", "1")
+        self.strafe_interval = float(bot_config.get("strafe_interval", 1.6))
+        self.strafe_blend = float(bot_config.get("strafe_blend", 0.35))
+        self._strafe_started_at = 0.0
+        self._strafe_side = 1
+        self.lead_shots_enabled = str(bot_config.get("lead_shots", "yes")).lower() in ("yes", "true", "1")
+        self.aimed_attacks_enabled = str(bot_config.get("aimed_attacks", "no")).lower() in ("yes", "true", "1")
+        self.projectile_speed_px_s = float(bot_config.get("projectile_speed_px_s", 900.0))
+        self._enemy_track = {}
+        self.enemy_velocity = (0.0, 0.0)
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -130,6 +141,19 @@ class Movement:
             self.last_attack_time = current_time
         self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
         return True
+
+    def aimed_attack(self, angle_degrees):
+        if not self.aimed_attacks_enabled:
+            return self.attack()
+        if self.attack_cooldown > 0:
+            current_time = time.time()
+            if current_time - self.last_attack_time < self.attack_cooldown:
+                return False
+            self.last_attack_time = current_time
+        if hasattr(self.window_controller, "aim_attack_angle"):
+            self.window_controller.aim_attack_angle(angle_degrees)
+            return True
+        return self.attack()
 
     def use_hypercharge(self):
         print("Using hypercharge")
@@ -814,6 +838,69 @@ class Play(Movement):
             return primary_angle
         return self.angle_from_direction(dx, dy)
 
+    def get_strafe_angle(self, toward_enemy_angle, current_time):
+        if self._strafe_started_at == 0.0:
+            self._strafe_started_at = current_time
+        if current_time - self._strafe_started_at >= self.strafe_interval:
+            self._strafe_side *= -1
+            self._strafe_started_at = current_time
+        return (toward_enemy_angle + 90 * self._strafe_side) % 360
+
+    def track_enemy_velocity(self, enemy_coords, current_time):
+        rounded_key = (round(enemy_coords[0] / 40) * 40, round(enemy_coords[1] / 40) * 40)
+        best_key = None
+        best_dist = 100 ** 2
+        for key, item in list(self._enemy_track.items()):
+            age = current_time - item["time"]
+            if age > 2.5:
+                self._enemy_track.pop(key, None)
+                continue
+            dist = (key[0] - rounded_key[0]) ** 2 + (key[1] - rounded_key[1]) ** 2
+            if dist < best_dist:
+                best_dist = dist
+                best_key = key
+        if best_key is None:
+            self._enemy_track[rounded_key] = {"pos": enemy_coords, "time": current_time}
+            return 0.0, 0.0
+        previous = self._enemy_track.pop(best_key)
+        dt = max(0.001, current_time - previous["time"])
+        velocity = (
+            max(-1200.0, min(1200.0, (enemy_coords[0] - previous["pos"][0]) / dt)),
+            max(-1200.0, min(1200.0, (enemy_coords[1] - previous["pos"][1]) / dt)),
+        )
+        self._enemy_track[rounded_key] = {"pos": enemy_coords, "time": current_time}
+        return velocity
+
+    def lead_shot_angle(self, player_pos, enemy_coords, enemy_velocity, projectile_speed_px_s=None):
+        projectile_speed = projectile_speed_px_s or self.projectile_speed_px_s
+        dx = enemy_coords[0] - player_pos[0]
+        dy = enemy_coords[1] - player_pos[1]
+        direct_angle = self.angle_from_direction(dx, dy)
+        if math.hypot(dx, dy) < 1 or projectile_speed <= 1:
+            return direct_angle
+
+        vx, vy = enemy_velocity
+        a = vx * vx + vy * vy - projectile_speed * projectile_speed
+        b = 2 * (dx * vx + dy * vy)
+        c = dx * dx + dy * dy
+        if abs(a) < 1e-6:
+            if abs(b) < 1e-6:
+                return direct_angle
+            t = -c / b
+        else:
+            discriminant = b * b - 4 * a * c
+            if discriminant < 0:
+                return direct_angle
+            root = math.sqrt(discriminant)
+            candidates = [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+            positive = [value for value in candidates if value > 0]
+            if not positive:
+                return direct_angle
+            t = min(positive)
+        if t <= 0 or t > 1.5:
+            return direct_angle
+        return self.angle_from_direction(dx + vx * t, dy + vy * t)
+
     def get_closest_teammate(self, player_data, teammate_data):
         player_pos = self.get_player_pos(player_data)
         closest_teammate = None
@@ -926,6 +1013,11 @@ class Play(Movement):
                 direction_x = enemy_coords[0] - player_pos[0]
                 direction_y = enemy_coords[1] - player_pos[1]
                 toward_angle = self.angle_from_direction(direction_x, direction_y)
+                now_t = time.time()
+                self.enemy_velocity = (
+                    self.track_enemy_velocity(enemy_coords, now_t)
+                    if self.lead_shots_enabled else (0.0, 0.0)
+                )
 
                 if enemy_distance > safe_range:
                     desired = toward_angle
@@ -933,6 +1025,15 @@ class Play(Movement):
                 else:
                     desired = self.angle_opposite(toward_angle)
                     vlog(f"enemy too close → retreat desired={desired:.1f}° (dist={int(enemy_distance)}px, safe={safe_range}px)")
+
+                if (
+                        self.strafe_enabled
+                        and fog_flee_angle is None
+                        and safe_range < enemy_distance <= attack_range
+                ):
+                    strafe_angle = self.get_strafe_angle(toward_angle, now_t)
+                    desired = self.blend_angles(desired, strafe_angle, self.strafe_blend)
+                    vlog(f"strafe blend → desired={desired:.1f}°")
 
                 if (self.trio_grouping_enabled and teammate_data and enemy_distance > attack_range):
                     closest_teammate, teammate_distance = self.get_closest_teammate(player_data, teammate_data)
@@ -981,12 +1082,21 @@ class Play(Movement):
             vlog(f"enemy in attack range (dist={int(enemy_distance)}px, range={attack_range}px), hittable={enemy_hittable}")
             if enemy_hittable:
                 if self.should_use_gadget and self.is_gadget_ready and self.time_since_holding_attack is None:
-                    self.use_gadget()
-                    self.time_since_gadget_checked = time.time()
-                    self.is_gadget_ready = False
+                    enemies_in_range = sum(
+                        1 for enemy in (enemy_data or [])
+                        if self.get_distance(self.get_enemy_pos(enemy), player_pos) <= attack_range
+                    )
+                    gadget_threshold = attack_range if enemies_in_range >= 2 else attack_range * 0.7
+                    if enemy_distance <= gadget_threshold:
+                        self.use_gadget()
+                        self.time_since_gadget_checked = time.time()
+                        self.is_gadget_ready = False
 
                 if not must_brawler_hold_attack:
-                    self.attack()
+                    attack_angle = toward_angle
+                    if self.lead_shots_enabled and self.enemy_velocity != (0.0, 0.0):
+                        attack_angle = self.lead_shot_angle(player_pos, enemy_coords, self.enemy_velocity)
+                    self.aimed_attack(attack_angle)
                 else:
                     if self.time_since_holding_attack is None:
                         self.time_since_holding_attack = time.time()
@@ -1209,7 +1319,9 @@ class Play(Movement):
     def get_brawler_range(self, brawler):
         if self.brawler_ranges is None:
             self.brawler_ranges = self.load_brawler_ranges(self.brawlers_info)
-        return self.brawler_ranges[brawler]
+        safe_range, attack_range, super_range = self.brawler_ranges[brawler]
+        multiplier = max(0.75, min(1.35, float(getattr(self, "adaptive_safe_range_multiplier", 1.0))))
+        return int(safe_range * multiplier), attack_range, super_range
 
     def _debounce_angle(self, angle: float, threshold_deg: float = 10.0) -> float:
         """Suppress small angle changes to avoid jitter.
