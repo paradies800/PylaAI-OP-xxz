@@ -71,17 +71,17 @@ def refresh_brawl_stars_api_token_if_enabled(config, file_path="cfg/brawl_stars_
     global _brawl_stars_api_refresh_done
     if _brawl_stars_api_refresh_done:
         return config
-    _brawl_stars_api_refresh_done = True
 
     if not _config_bool(config.get("auto_refresh_token"), False):
+        _brawl_stars_api_refresh_done = True
         return config
 
     email = str(config.get("developer_email", "")).strip()
     password = str(config.get("developer_password", "")).strip()
     if not email or not password:
         raise ValueError(
-            "auto_refresh_token is enabled, but developer_email/developer_password are missing "
-            "in cfg/brawl_stars_api.toml"
+            "auto_refresh_token is enabled, but developer_email/developer_password are missing. "
+            "Open cfg/brawl_stars_api.toml and fill developer_email, developer_password, and player_tag."
         )
 
     timeout = int(config.get("timeout_seconds", 15))
@@ -129,6 +129,7 @@ def refresh_brawl_stars_api_token_if_enabled(config, file_path="cfg/brawl_stars_
     config["api_token"] = new_token
     config["last_public_ip"] = public_ip
     save_dict_as_toml(config, file_path)
+    _brawl_stars_api_refresh_done = True
     print(f"Refreshed Brawl Stars API token for public IP {public_ip}.")
     return config
 
@@ -148,7 +149,7 @@ cached_toml = {}
 def load_toml_as_dict(file_path):
     if file_path not in cached_toml:
         if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
                 cached_toml[file_path] = toml.load(f)
         else:
             cached_toml[file_path] = {}
@@ -161,7 +162,7 @@ def clear_toml_cache(file_path=None):
         cached_toml.pop(file_path, None)
 
 def save_dict_as_toml(data, file_path):
-    with open(file_path, 'w') as f:
+    with open(file_path, 'w', encoding='utf-8') as f:
         toml.dump(data, f)
     cached_toml[file_path] = data
 
@@ -221,6 +222,15 @@ def save_brawler_data(data):
 def normalize_brawler_name(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
+def get_config_player_tag(config):
+    tag = str(config.get("player_tag", "")).strip()
+    if tag and tag.upper() != "#YOURTAG":
+        return tag
+    general_tag = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
+    if general_tag and general_tag.upper() != "#YOURTAG":
+        return general_tag
+    return tag
+
 
 def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
     api_token = _extract_api_token(api_token)
@@ -250,22 +260,28 @@ def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
         reason = error_payload.get("reason") or error_payload.get("message") or response.text
     except ValueError:
         reason = response.text
+    if response.status_code == 403:
+        raise RuntimeError(
+            "Brawl Stars API accessDenied. Your API token is not valid for the current public IP. "
+            "Enable auto_refresh_token and fill developer_email/developer_password in cfg/brawl_stars_api.toml, "
+            "or create a new token manually for this PC's public IP."
+        )
     raise RuntimeError(f"Brawl Stars API error {response.status_code}: {reason}")
 
 
 def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
     try:
+        clear_toml_cache(file_path)
         config = load_toml_as_dict(file_path)
-        player_tag = str(config.get("player_tag", "")).strip()
-        if not player_tag or player_tag.upper() == "#YOURTAG":
-            config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
+        config = dict(config)
+        config["player_tag"] = get_config_player_tag(config)
         return refresh_brawl_stars_api_token_if_enabled(config, file_path)
     except toml.TomlDecodeError:
         pass
 
     if not os.path.exists(file_path):
         return {
-            "player_tag": str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip(),
+            "player_tag": get_config_player_tag({}),
             "timeout_seconds": 15,
             "auto_refresh_token": True,
         }
@@ -283,8 +299,8 @@ def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
         config["player_tag"] = tag_match.group(1).strip()
     else:
         config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
-    if not config["player_tag"] or config["player_tag"].upper() == "#YOURTAG":
-        config["player_tag"] = str(load_toml_as_dict("cfg/general_config.toml").get("player_tag", "")).strip()
+
+    config["player_tag"] = get_config_player_tag(config)
 
     timeout_match = re.search(r"timeout_seconds\s*=\s*(\d+)", text)
     if timeout_match:
@@ -296,6 +312,23 @@ def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml"):
     config["auto_refresh_token"] = (
         auto_refresh_match.group(1).lower() == "true" if auto_refresh_match else True
     )
+
+    for key in (
+        "developer_email",
+        "developer_password",
+        "public_ip_service",
+        "key_name_prefix",
+        "key_description",
+        "last_public_ip",
+    ):
+        match = re.search(rf'{key}\s*=\s*"([^"]*)"', text)
+        if match:
+            config[key] = match.group(1)
+
+    for key in ("delete_old_auto_tokens", "delete_all_tokens"):
+        match = re.search(rf"{key}\s*=\s*(true|false)", text, re.IGNORECASE)
+        if match:
+            config[key] = match.group(1).lower() == "true"
 
     return refresh_brawl_stars_api_token_if_enabled(config, file_path)
 

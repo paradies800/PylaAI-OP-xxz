@@ -1,7 +1,11 @@
 import asyncio
+import gc
+import os
 import platform
 import sys
 import time
+import traceback
+from pathlib import Path
 
 import cv2
 
@@ -44,6 +48,7 @@ if platform.architecture()[0] != "64bit":
 pyla_version = load_toml_as_dict("./cfg/general_config.toml")['pyla_version']
 
 def pyla_main(data):
+
     class Main:
 
         def __init__(self):
@@ -82,6 +87,9 @@ def pyla_main(data):
             self.match_ready_at = 0.0
             self.match_warmup_seconds = float(load_toml_as_dict("cfg/bot_config.toml").get("match_warmup_seconds", 4.0))
             time_thresholds = load_toml_as_dict("cfg/time_tresholds.toml")
+            self.started_at = time.time()
+            self.low_ips_startup_grace_seconds = float(time_thresholds.get("low_ips_startup_grace_seconds", 120))
+            self.low_ips_match_grace_seconds = float(time_thresholds.get("low_ips_match_grace_seconds", 20))
             self.visual_freeze_check_interval = float(time_thresholds.get("visual_freeze_check_interval", 1.0))
             self.visual_freeze_restart_seconds = float(time_thresholds.get("visual_freeze_restart", 45.0))
             self.visual_freeze_diff_threshold = float(time_thresholds.get("visual_freeze_diff_threshold", 0.35))
@@ -95,6 +103,14 @@ def pyla_main(data):
             self.last_stale_feed_recovery = 0.0
             self.stale_feed_recovery_attempts = 0
             self.last_stale_feed_message = 0.0
+            self.low_ips_threshold = float(time_thresholds.get("low_ips_recovery_threshold", 4.0))
+            self.low_ips_recovery_seconds = float(time_thresholds.get("low_ips_recovery_seconds", 35.0))
+            self.low_ips_recovery_cooldown = float(time_thresholds.get("low_ips_recovery_cooldown", 20.0))
+            self.low_ips_app_restart_after = int(time_thresholds.get("low_ips_app_restart_after", 2))
+            self.low_ips_emulator_restart_after = int(time_thresholds.get("low_ips_emulator_restart_after", 4))
+            self.low_ips_since = None
+            self.last_low_ips_recovery = 0.0
+            self.low_ips_recovery_attempts = 0
             self.last_disconnect_check = 0.0
             self.disconnect_reload_attempts = 0
             self.last_processed_frame_id = -1
@@ -125,12 +141,15 @@ def pyla_main(data):
             self.window_controller.restart_brawl_stars()
             self.window_controller.restart_scrcpy_client()
             self.reset_visual_freeze_watchdog()
+            self.reset_low_ips_watchdog(recovered=False)
+            gc.collect()
             self.lobby_entered_at = None
             self.last_lobby_start_press = 0.0
             self.last_processed_frame_id = -1
             self.Play.time_since_detections["player"] = time.time()
             self.Play.time_since_detections["enemy"] = time.time()
-            if self.window_controller.device.app_current().package != window_controller.BRAWL_STARS_PACKAGE:
+            opened_package = self.window_controller.foreground_package(timeout=4)
+            if opened_package and opened_package != window_controller.BRAWL_STARS_PACKAGE:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
@@ -148,6 +167,61 @@ def pyla_main(data):
             self.last_visual_sample = None
             self.last_visual_freeze_check = 0.0
             self.last_visual_change_time = time.time()
+
+        def reset_low_ips_watchdog(self, recovered=True):
+            self.low_ips_since = None
+            self.ips_ema = None
+            if recovered:
+                self.low_ips_recovery_attempts = 0
+
+        def recover_low_ips(self, current_ips):
+            now = time.time()
+            if now - self.started_at < self.low_ips_startup_grace_seconds:
+                return False
+            if self.state == "match" and now - self.match_ready_at < self.low_ips_match_grace_seconds:
+                return False
+            if current_ips >= self.low_ips_threshold:
+                if self.low_ips_since is not None:
+                    print(f"IPS recovered to {current_ips:.2f}; clearing low-IPS watchdog.")
+                self.reset_low_ips_watchdog(recovered=True)
+                return False
+
+            _, last_frame_time = self.window_controller.get_latest_frame()
+            frame_age = now - last_frame_time if last_frame_time else 999.0
+            if self.low_ips_since is None:
+                self.low_ips_since = now
+                return False
+
+            low_for = now - self.low_ips_since
+            if low_for < self.low_ips_recovery_seconds:
+                return False
+            if now - self.last_low_ips_recovery < self.low_ips_recovery_cooldown:
+                return False
+
+            self.last_low_ips_recovery = now
+            self.low_ips_recovery_attempts += 1
+            self.window_controller.keys_up(list("wasd"))
+            print(
+                f"IPS stayed low ({current_ips:.2f}, frame age {frame_age:.1f}s) "
+                f"for {low_for:.1f}s; recovery attempt {self.low_ips_recovery_attempts}."
+            )
+
+            if self.low_ips_recovery_attempts >= self.low_ips_emulator_restart_after:
+                print("Low IPS did not recover after app/scrcpy restarts; restarting emulator profile.")
+                self.window_controller.restart_emulator_profile()
+                self.low_ips_recovery_attempts = 0
+            elif self.low_ips_recovery_attempts >= self.low_ips_app_restart_after:
+                print("Low IPS persisted; restarting Brawl Stars and scrcpy.")
+                self.restart_brawl_stars()
+            else:
+                print("Low IPS detected; restarting scrcpy feed.")
+                self.window_controller.restart_scrcpy_client()
+
+            self.last_processed_frame_id = -1
+            self.low_ips_since = now
+            self.ips_ema = None
+            gc.collect()
+            return True
 
         def handle_visual_freeze(self, frame):
             if self.state != "match":
@@ -358,7 +432,11 @@ def pyla_main(data):
                         current_ips = c / elapsed
                         self.ips_ema = current_ips if self.ips_ema is None else (self.ips_ema * 0.75 + current_ips * 0.25)
                         print(f"{self.ips_ema:.2f} IPS")
-                        if self.ips_ema < 3 and time.time() - self.low_frame_fps_warning_time > 20:
+                        if self.recover_low_ips(self.ips_ema):
+                            s_time = time.time()
+                            c = 0
+                            continue
+                        if self.ips_ema is not None and self.ips_ema < 3 and time.time() - self.low_frame_fps_warning_time > 20:
                             _, last_frame_time = self.window_controller.get_latest_frame()
                             frame_age = time.time() - last_frame_time if last_frame_time else 0
                             print(
@@ -416,15 +494,39 @@ def pyla_main(data):
     main.main()
 
 
-all_brawlers = get_brawler_list()
-if api_base_url != "localhost":
-    update_missing_brawlers_info(all_brawlers)
-    check_version()
-    update_wall_model_classes()
-    if not current_wall_model_is_latest():
-        print("New Wall detection model found, downloading... (this might take a few minutes depending on your internet speed)")
-        get_latest_wall_model_file()
+def run_app():
+    all_brawlers = get_brawler_list()
+    if api_base_url != "localhost":
+        update_missing_brawlers_info(all_brawlers)
+        check_version()
+        update_wall_model_classes()
+        if not current_wall_model_is_latest():
+            print("New Wall detection model found, downloading... (this might take a few minutes depending on your internet speed)")
+            get_latest_wall_model_file()
 
-# Use the smaller ratio to maintain aspect ratio
-app = App(login, SelectBrawler, pyla_main, all_brawlers, Hub)
-app.start(pyla_version, get_latest_version)
+    app = App(login, SelectBrawler, pyla_main, all_brawlers, Hub)
+    app.start(pyla_version, get_latest_version)
+
+
+def write_crash_log(error):
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    crash_path = log_dir / "startup_crash.log"
+    crash_path.write_text(
+        "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        encoding="utf-8",
+    )
+    print(f"Pyla crashed during startup. Crash log saved to: {crash_path.resolve()}")
+    print(traceback.format_exc())
+
+
+if __name__ == "__main__":
+    try:
+        run_app()
+    except Exception as e:
+        write_crash_log(e)
+        try:
+            input("Press Enter to close...")
+        except EOFError:
+            pass
+        raise

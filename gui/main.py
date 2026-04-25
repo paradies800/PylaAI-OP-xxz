@@ -1,8 +1,8 @@
 import os
 import sys
-import gc
 import tkinter as tk
 
+import customtkinter as ctk
 import utils
 from utils import api_base_url
 
@@ -32,6 +32,27 @@ def patch_tk_cleanup_errors():
     tk.Variable._pyla_safe_del = True
 
 
+def install_tk_background_error_filter(root):
+    def pyla_bgerror(message):
+        message = str(message)
+        if (
+                "invalid command name" in message
+                and (
+                    "update" in message
+                    or "check_dpi_scaling" in message
+                    or "_click_animation" in message
+                )
+        ):
+            return
+        print(message)
+
+    try:
+        root.tk.createcommand("pyla_bgerror", pyla_bgerror)
+        root.tk.call("proc", "bgerror", "message", "pyla_bgerror $message")
+    except Exception:
+        pass
+
+
 class App:
 
     def __init__(self, login_page, select_brawler_page, pyla_main, brawlers, hub_menu):
@@ -59,7 +80,6 @@ class App:
                 self.hub_menu(pyla_version, get_latest_version())
             utils.clear_toml_cache()
             self.select_brawler(self.set_data, self.brawlers)
-            gc.collect()
             if self.brawler_data:
                 utils.save_brawler_data(self.brawler_data)
                 self.pyla_main(self.brawler_data)

@@ -1,6 +1,10 @@
 import unittest
 
-from window_controller import WindowController, _infer_ldplayer_index, _infer_mumu_index
+from window_controller import (
+    WindowController,
+    _infer_ldplayer_index,
+    _infer_mumu_index,
+)
 
 
 class EmulatorProfileMappingTest(unittest.TestCase):

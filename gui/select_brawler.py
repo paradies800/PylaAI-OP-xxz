@@ -18,6 +18,8 @@ from utils import (
 )
 from tkinter import filedialog
 
+from gui.main import install_tk_background_error_filter
+
 orig_screen_width, orig_screen_height = 1920, 1080
 width, height = pyautogui.size()
 width_ratio = width / orig_screen_width
@@ -30,6 +32,7 @@ class SelectBrawler:
 
     def __init__(self, data_setter, brawlers):
         self.app = ctk.CTk()
+        install_tk_background_error_filter(self.app)
         tk._default_root = self.app
 
         square_size = int(75 * scale_factor)
@@ -63,6 +66,7 @@ class SelectBrawler:
         self.brawlers_data = []
         self.farm_type = ""
         self.api_trophies_by_brawler = None
+        self.api_trophies_by_normalized_brawler = None
         self.api_trophy_error_reported = False
         self._filter_after_id = None
         self._image_render_after_id = None
@@ -89,9 +93,20 @@ class SelectBrawler:
             placeholder_text="Type brawler name...", font=("", int(20 * scale_factor)), width=int(200 * scale_factor),
             fg_color=self.colors['ui box gray'], border_color=self.colors['cherry red'], text_color="white"
         )
-        ctk.CTkLabel(self.app, text="Write brawler", font=("Comic sans MS", int(20 * scale_factor)),
-                     text_color=self.colors['cherry red']).place(x=int(scale_factor * 373), y=int(scale_factor * 20))
-        self.filter_entry.place(x=int(340 * scale_factor), y=int(scale_factor * 52))
+        header_text = "Write brawler"
+        search_x = int(330 * scale_factor)
+        search_width = int(220 * scale_factor)
+        search_label = ctk.CTkLabel(
+            self.app,
+            text=header_text,
+            font=("Comic sans MS", int(20 * scale_factor)),
+            text_color=self.colors['cherry red'],
+            width=search_width,
+            anchor="center",
+        )
+        search_label.place(x=search_x, y=int(scale_factor * 18))
+        self.filter_entry.configure(width=search_width)
+        self.filter_entry.place(x=search_x, y=int(scale_factor * 52))
         self.filter_var.trace_add("write", lambda *args: self.queue_image_filter_update())
 
         # Frame to hold the images
@@ -114,7 +129,6 @@ class SelectBrawler:
                       font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
                       border_width=int(2 * scale_factor)).place(x=int(10 * scale_factor),
                                                                 y=int((window_height-60* scale_factor) ))
-
 
         self.app.mainloop()
 
@@ -234,8 +248,13 @@ class SelectBrawler:
             except (TypeError, ValueError):
                 configured_port_int = 0
             selected_emulator = "MuMu" if configured_port_int in (16384, 16416, 16448, 7555) else "LDPlayer"
+        try:
+            configured_port = int(configured_port)
+        except (TypeError, ValueError):
+            configured_port = 0
         preferred_ports = []
-        for port in [configured_port] + emulator_ports[selected_emulator] + emulator_ports["LDPlayer"] + emulator_ports["MuMu"]:
+        port_candidates = [configured_port] + emulator_ports[selected_emulator] + emulator_ports["LDPlayer"] + emulator_ports["MuMu"]
+        for port in port_candidates:
             try:
                 port = int(port)
             except (TypeError, ValueError):
@@ -326,6 +345,7 @@ class SelectBrawler:
         tap(1210, 426, 1.0)  # Least Trophies
         tap(422, 359, 1.0)   # first brawler card
         tap(260, 991, 1.0)   # Select
+        return device.serial
 
     def push_all_1k(self):
         hidden_for_start = False
@@ -340,11 +360,15 @@ class SelectBrawler:
                 self.app.deiconify()
                 return
             print("Push All 1k first brawler:", data[0])
-            self.quick_select_least_trophies_brawler()
+            selected_serial = self.quick_select_least_trophies_brawler()
             self.brawlers_data = data
             self.start_bot()
         except Exception as e:
             print(f"Push All 1k failed: {e}")
+            print(
+                "Open cfg/brawl_stars_api.toml and make sure player_tag, developer_email, "
+                "developer_password, and auto_refresh_token are set correctly."
+            )
             if hidden_for_start:
                 try:
                     self.app.deiconify()
@@ -371,16 +395,34 @@ class SelectBrawler:
                 for brawler in self.brawlers
             }
             self.api_trophies_by_brawler = {}
+            self.api_trophies_by_normalized_brawler = {}
             for api_brawler in player_data.get("brawlers", []):
-                brawler = known_by_normalized_name.get(normalize_brawler_name(api_brawler.get("name", "")))
+                normalized_name = normalize_brawler_name(api_brawler.get("name", ""))
+                brawler = known_by_normalized_name.get(normalized_name)
                 if brawler:
-                    self.api_trophies_by_brawler[brawler] = int(api_brawler.get("trophies", 0))
+                    trophies = int(api_brawler.get("trophies", 0))
+                    self.api_trophies_by_brawler[brawler] = trophies
+                    self.api_trophies_by_normalized_brawler[normalize_brawler_name(brawler)] = trophies
+                    self.api_trophies_by_normalized_brawler[normalized_name] = trophies
+            print(f"Loaded current trophies for {len(self.api_trophies_by_brawler)} brawlers from Brawl Stars API.")
         except Exception as e:
             self.api_trophies_by_brawler = {}
+            self.api_trophies_by_normalized_brawler = {}
             if not self.api_trophy_error_reported:
                 print(f"Could not auto-fill trophies. Check {config_path}: {e}")
                 self.api_trophy_error_reported = True
         return self.api_trophies_by_brawler
+
+    def get_api_trophies_for_brawler(self, brawler):
+        api_trophies = self.get_api_trophies_by_brawler()
+        if brawler in api_trophies:
+            return api_trophies[brawler]
+        if self.api_trophies_by_normalized_brawler is None:
+            self.api_trophies_by_normalized_brawler = {
+                normalize_brawler_name(name): trophies
+                for name, trophies in api_trophies.items()
+            }
+        return self.api_trophies_by_normalized_brawler.get(normalize_brawler_name(brawler))
 
     def on_image_click(self, brawler):
         self.open_brawler_entry(brawler)
@@ -401,9 +443,9 @@ class SelectBrawler:
         wins_var = tk.StringVar()
         current_win_streak_var = tk.StringVar(value="0")
         auto_pick_var = tk.BooleanVar(value=True) if self.brawlers_data else tk.BooleanVar(value=False)
-        api_trophies = self.get_api_trophies_by_brawler()
-        if brawler in api_trophies:
-            trophies_var.set(str(api_trophies[brawler]))
+        api_trophies = self.get_api_trophies_for_brawler(brawler)
+        if api_trophies is not None:
+            trophies_var.set(str(api_trophies))
 
         # --- Fixed Y positions for placed widgets ---
         y_title = int(7 * scale_factor)
@@ -624,7 +666,5 @@ class SelectBrawler:
 
         render_batch()
 
-
 def dummy_data_setter(data):
     print("Data set:", data)
-

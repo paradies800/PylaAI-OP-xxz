@@ -1,7 +1,9 @@
 import atexit
 import glob
+import json
 import math
 import os
+import re
 import subprocess
 import socket
 import threading
@@ -55,6 +57,8 @@ COMMON_MUMU_MANAGERS = [
     r"C:\Program Files\Netease\MuMuPlayer\nx_main\MuMuManager.exe",
     r"C:\Program Files (x86)\Netease\MuMuPlayer\nx_main\MuMuManager.exe",
 ]
+
+LOCAL_ADB_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adb.exe")
 
 
 def _infer_supported_emulator(configured_port):
@@ -112,6 +116,172 @@ def _find_existing_path(paths):
             if os.path.exists(match):
                 return match
     return None
+
+
+def _adb_executable():
+    if os.path.exists(LOCAL_ADB_EXE):
+        return LOCAL_ADB_EXE
+    return "adb"
+
+
+def _run_adb(serial, args, timeout=5):
+    command = [_adb_executable()]
+    if serial:
+        command.extend(["-s", serial])
+    command.extend(args)
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+
+
+def _is_adb_serial_online(serial, timeout=3):
+    if not serial:
+        return False
+    try:
+        completed = _run_adb(None, ["devices"], timeout=timeout)
+    except Exception:
+        return False
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == serial:
+            return parts[1] == "device"
+    return False
+
+
+def _foreground_package_from_text(text):
+    patterns = (
+        r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/",
+        r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/",
+        r"mInputMethodTarget=.*?\s([A-Za-z0-9_.]+)/",
+        r"topResumedActivity=.*?\s([A-Za-z0-9_.]+)/",
+        r"ResumedActivity:.*?\s([A-Za-z0-9_.]+)/",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text or "")
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _get_foreground_package(serial, timeout=5):
+    try:
+        for args in (
+            ["shell", "dumpsys", "window"],
+            ["shell", "dumpsys", "activity", "activities"],
+        ):
+            completed = _run_adb(serial, args, timeout=timeout)
+            if completed.returncode == 0:
+                package = _foreground_package_from_text(completed.stdout)
+                if package:
+                    return package
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(f"ADB foreground-app check timed out for {serial}.")
+    except Exception:
+        return ""
+    return ""
+
+
+def _start_android_app(serial, package, timeout=8):
+    try:
+        completed = _run_adb(
+            serial,
+            ["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"],
+            timeout=timeout,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _stop_android_app(serial, package, timeout=8):
+    try:
+        completed = _run_adb(serial, ["shell", "am", "force-stop", package], timeout=timeout)
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _get_mumu_manager_path(config=None):
+    manager_path = ""
+    if config:
+        manager_path = str(config.get("mumu_manager_path", "")).strip()
+    if manager_path:
+        return manager_path
+    return _find_existing_path(COMMON_MUMU_MANAGERS)
+
+
+def get_running_mumu_profiles(config=None):
+    manager_path = _get_mumu_manager_path(config)
+    if not manager_path:
+        return []
+    try:
+        completed = subprocess.run(
+            [manager_path, "info", "--vmindex", "all"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode != 0:
+            return []
+        payload = json.loads(completed.stdout or "{}")
+    except Exception:
+        return []
+
+    profiles = []
+    for _, profile in payload.items():
+        try:
+            is_running = bool(profile.get("is_android_started")) or bool(profile.get("is_process_started"))
+            adb_port = int(profile.get("adb_port", 0))
+            index = int(profile.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        if is_running and adb_port:
+            profiles.append({"index": index, "adb_port": adb_port, "name": str(profile.get("name", ""))})
+    profiles.sort(key=lambda item: item["index"])
+    return profiles
+
+
+def get_mumu_profiles(config=None):
+    manager_path = _get_mumu_manager_path(config)
+    if not manager_path:
+        return []
+    try:
+        completed = subprocess.run(
+            [manager_path, "info", "--vmindex", "all"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode != 0:
+            return []
+        payload = json.loads(completed.stdout or "{}")
+    except Exception:
+        return []
+
+    profiles = []
+    for _, profile in payload.items():
+        try:
+            index = int(profile.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        try:
+            adb_port = int(profile.get("adb_port", 0) or 0)
+        except (TypeError, ValueError):
+            adb_port = 0
+        if not adb_port:
+            adb_port = 16384 + (32 * index)
+        profiles.append({
+            "index": index,
+            "adb_port": adb_port,
+            "name": str(profile.get("name", "")),
+            "is_running": bool(profile.get("is_android_started")) or bool(profile.get("is_process_started")),
+        })
+    profiles.sort(key=lambda item: item["index"])
+    return profiles
 
 
 def _infer_ldplayer_index(port):
@@ -262,6 +432,10 @@ class WindowController:
                 raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
 
             self.device, opened_package = choose_best_device(device_list, selected_emulator, configured_port)
+            if self.device is None:
+                raise ConnectionError(
+                    f"No matching ADB device found on port {configured_port}."
+                )
             selected_is_preferred = self.device in preferred_devices
             if opened_package == self.brawl_stars_package:
                 print(f"Selected ADB device with Brawl Stars in foreground: {self.device.serial}")
@@ -280,6 +454,7 @@ class WindowController:
             self.last_frame_time = 0.0
             self.frame_id = 0
             self.last_stale_warning_time = 0.0
+            self.scrcpy_generation = 0
             self.last_joystick_pos = (None, None)
             self.last_joystick_down_time = 0.0
             self.FRAME_STALE_TIMEOUT = 15.0
@@ -294,6 +469,14 @@ class WindowController:
         self.PID_ATTACK = 2  # ID for clicks/attacks
         self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
         self.time_since_checked_if_brawl_stars_crashed = time.time()
+        self.foreground_check_failures = 0
+        self.foreground_failure_restart_threshold = int(
+            load_toml_as_dict("cfg/time_tresholds.toml").get("foreground_failure_restart_threshold", 4)
+        )
+        self.last_emulator_restart_time = 0.0
+        self.emulator_restart_cooldown = float(
+            load_toml_as_dict("cfg/time_tresholds.toml").get("emulator_restart_cooldown", 180)
+        )
 
     def _resolve_emulator_profile_index(self, general_config):
         configured_index = general_config.get("emulator_profile_index", "auto")
@@ -313,9 +496,7 @@ class WindowController:
             return custom_command
 
         if self.selected_emulator == "MuMu":
-            manager_path = str(general_config.get("mumu_manager_path", "")).strip()
-            if not manager_path:
-                manager_path = _find_existing_path(COMMON_MUMU_MANAGERS)
+            manager_path = _get_mumu_manager_path(general_config)
             if manager_path:
                 return [manager_path, "control", "--vmindex", str(self.emulator_profile_index), "launch"]
             return None
@@ -423,6 +604,8 @@ class WindowController:
 
     def wait_for_saved_device(self, timeout=120):
         deadline = time.time() + timeout
+        disconnected_stale_serial = False
+        stable_since = None
         expected_serials = [
             serial for serial in (
                 getattr(self, "connected_serial", ""),
@@ -432,6 +615,9 @@ class WindowController:
         while time.time() < deadline:
             if self.configured_serial:
                 try:
+                    if not disconnected_stale_serial:
+                        adb.disconnect(self.configured_serial)
+                        disconnected_stale_serial = True
                     adb.connect(self.configured_serial)
                 except Exception:
                     pass
@@ -441,30 +627,44 @@ class WindowController:
                     if device.get_state() != "device":
                         continue
                     if device.serial in expected_serials or _serial_port(device.serial) == self.configured_port:
-                        self.device = device
-                        self.connected_serial = device.serial
-                        self.sync_restart_target_to_connected_device()
-                        print(f"Reconnected to emulator ADB device: {device.serial}")
-                        return True
+                        if stable_since is None:
+                            stable_since = time.time()
+                        if time.time() - stable_since >= 3:
+                            self.device = device
+                            self.connected_serial = device.serial
+                            self.sync_restart_target_to_connected_device()
+                            print(f"Reconnected to emulator ADB device: {device.serial}")
+                            return True
+                        break
+                else:
+                    stable_since = None
             except Exception:
+                stable_since = None
                 pass
 
             try:
                 serial = expected_serials[0] if expected_serials else None
                 device = adb.device(serial=serial)
                 if device.get_state() == "device":
-                    self.device = device
-                    self.connected_serial = device.serial
-                    self.sync_restart_target_to_connected_device()
-                    print(f"Reconnected to emulator ADB device: {device.serial}")
-                    return True
+                    if stable_since is None:
+                        stable_since = time.time()
+                    if time.time() - stable_since >= 3:
+                        self.device = device
+                        self.connected_serial = device.serial
+                        self.sync_restart_target_to_connected_device()
+                        print(f"Reconnected to emulator ADB device: {device.serial}")
+                        return True
             except Exception:
+                stable_since = None
                 pass
             time.sleep(2)
         print("Timed out waiting for emulator ADB device to come back online.")
         return False
 
     def ensure_emulator_online(self):
+        serial = getattr(self, "connected_serial", "") or getattr(self, "configured_serial", "")
+        if _is_adb_serial_online(serial):
+            return True
         try:
             if self.device.get_state() == "device":
                 return True
@@ -474,10 +674,15 @@ class WindowController:
         if not self.emulator_autorestart:
             return False
 
-        self.restart_emulator_profile()
-        return True
+        return self.restart_emulator_profile()
 
     def restart_emulator_profile(self):
+        now = time.time()
+        if now - self.last_emulator_restart_time < self.emulator_restart_cooldown:
+            remaining = self.emulator_restart_cooldown - (now - self.last_emulator_restart_time)
+            print(f"Skipping emulator restart; last restart was too recent ({remaining:.0f}s cooldown left).")
+            return False
+        self.last_emulator_restart_time = now
         print(f"{self.selected_emulator} appears to be down; restarting the saved emulator profile.")
         try:
             self.keys_up(list("wasd"))
@@ -496,18 +701,25 @@ class WindowController:
                 raise ConnectionError("Could not restart emulator profile.")
         time.sleep(3)
         self.start_scrcpy_client()
-        self.device.app_start(self.brawl_stars_package)
+        if not _start_android_app(self.connected_serial, self.brawl_stars_package):
+            self.device.app_start(self.brawl_stars_package)
         time.sleep(3)
         self.time_since_checked_if_brawl_stars_crashed = time.time()
         print("Emulator profile restarted and Brawl Stars launched.")
+        return True
 
     def start_scrcpy_client(self):
-        self.ensure_emulator_online()
+        if not self.ensure_emulator_online():
+            raise ConnectionError("ADB device is offline; waiting for emulator cooldown before retrying.")
+        self.scrcpy_generation += 1
+        generation = self.scrcpy_generation
 
         def on_frame(frame):
             if frame is not None:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 with self.frame_lock:
+                    if generation != self.scrcpy_generation:
+                        return
                     self.last_frame = frame
                     self.last_frame_time = time.time()
                     self.frame_id += 1
@@ -524,15 +736,33 @@ class WindowController:
         client_kwargs = {"device": self.device, "max_width": 0}
         if self.scrcpy_max_fps:
             client_kwargs["max_fps"] = self.scrcpy_max_fps
-        self.scrcpy_client = scrcpy.Client(**client_kwargs)
-        self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
-        self.scrcpy_client.start(threaded=True)
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                self.scrcpy_client = scrcpy.Client(**client_kwargs)
+                self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+                self.scrcpy_client.start(threaded=True)
+                return
+            except Exception as e:
+                last_error = e
+                print(f"Scrcpy start failed attempt {attempt}/3: {e}")
+                try:
+                    if self.scrcpy_client is not None:
+                        self.scrcpy_client.stop()
+                except Exception:
+                    pass
+                self.scrcpy_client = None
+                time.sleep(2)
+        raise last_error
 
     def restart_scrcpy_client(self):
         print("Restarting scrcpy client...")
-        self.ensure_emulator_online()
+        if not self.ensure_emulator_online():
+            print("Cannot restart scrcpy yet because ADB is offline.")
+            return False
         old_client = self.scrcpy_client
         self.scrcpy_client = None
+        self.scrcpy_generation += 1
         if old_client is not None:
             def stop_old_client():
                 try:
@@ -548,6 +778,7 @@ class WindowController:
         time.sleep(0.4)
         self.start_scrcpy_client()
         print("Scrcpy client restarted successfully.")
+        return True
 
     def get_latest_frame(self):
         with self.frame_lock:
@@ -562,15 +793,25 @@ class WindowController:
     def restart_brawl_stars(self):
         self.ensure_emulator_online()
         try:
-            self.device.app_stop(self.brawl_stars_package)
+            self.keys_up(list("wasd"))
+        except Exception:
+            pass
+        try:
+            if not _stop_android_app(self.connected_serial, self.brawl_stars_package):
+                self.device.app_stop(self.brawl_stars_package)
         except Exception as e:
             print(f"Could not stop Brawl Stars cleanly: {e}")
             self.restart_emulator_profile()
         time.sleep(1)
-        self.device.app_start(self.brawl_stars_package)
+        if not _start_android_app(self.connected_serial, self.brawl_stars_package):
+            self.device.app_start(self.brawl_stars_package)
         time.sleep(3)
         self.time_since_checked_if_brawl_stars_crashed = time.time()
+        self.foreground_check_failures = 0
         print("Brawl stars restarted successfully.")
+
+    def foreground_package(self, timeout=4):
+        return _get_foreground_package(self.connected_serial, timeout=timeout)
 
     def screenshot(self):
         if not self.ensure_emulator_online():
@@ -578,21 +819,37 @@ class WindowController:
         c_time = time.time()
         if c_time - self.time_since_checked_if_brawl_stars_crashed > self.check_if_brawl_stars_crashed_timer:
             try:
-                opened_app = self.device.app_current().package.strip()
+                opened_app = _get_foreground_package(self.connected_serial, timeout=4)
+                if not opened_app:
+                    raise TimeoutError("Could not read foreground package through bounded ADB check.")
             except Exception as e:
-                print(f"Could not query foreground app, emulator may have crashed: {e}")
-                self.restart_emulator_profile()
-                opened_app = self.device.app_current().package.strip()
+                self.foreground_check_failures += 1
+                print(
+                    f"Could not query foreground app ({self.foreground_check_failures}/"
+                    f"{self.foreground_failure_restart_threshold}): {e}"
+                )
+                self.time_since_checked_if_brawl_stars_crashed = c_time
+                if self.foreground_check_failures < self.foreground_failure_restart_threshold:
+                    opened_app = self.brawl_stars_package
+                else:
+                    print("Foreground checks keep failing; restarting emulator profile.")
+                    if not self.restart_emulator_profile():
+                        opened_app = self.brawl_stars_package
+                    else:
+                        opened_app = _get_foreground_package(self.connected_serial, timeout=4)
             if opened_app != self.brawl_stars_package:
+                self.foreground_check_failures = 0
                 print(f"Brawl stars has crashed, {opened_app} is the app opened ! Restarting...")
                 try:
-                    self.device.app_start(self.brawl_stars_package)
+                    if not _start_android_app(self.connected_serial, self.brawl_stars_package):
+                        self.device.app_start(self.brawl_stars_package)
                 except Exception as e:
                     print(f"Could not start Brawl Stars, restarting emulator profile: {e}")
                     self.restart_emulator_profile()
                 time.sleep(3)
                 self.time_since_checked_if_brawl_stars_crashed = time.time()
             else:
+                self.foreground_check_failures = 0
                 self.time_since_checked_if_brawl_stars_crashed = c_time
         frame, frame_time = self.get_latest_frame()
 
@@ -740,5 +997,7 @@ class WindowController:
         if hasattr(self, 'scrcpy_client'):
             client = self.scrcpy_client
             self.scrcpy_client = None
+            if hasattr(self, "scrcpy_generation"):
+                self.scrcpy_generation += 1
             if client is not None:
                 client.stop()

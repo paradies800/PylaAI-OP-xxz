@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+import ctypes
 from pathlib import Path
 
 
@@ -48,6 +49,34 @@ class RuntimeControlWindow:
         write_state(self.state_path, RUNNING)
         if self.process and self.process.poll() is None:
             self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+
+def process_is_alive(pid):
+    if not pid or pid == os.getpid():
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == still_active
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def run_window(state_path):
@@ -61,6 +90,11 @@ def run_window(state_path):
     root.geometry("280x170")
     root.resizable(False, False)
     root.attributes("-topmost", True)
+    owner_pid = None
+    try:
+        owner_pid = int(Path(state_path).stem.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        owner_pid = None
 
     status_var = tk.StringVar(value="Running")
     button_var = tk.StringVar(value="Pause Bot")
@@ -85,6 +119,9 @@ def run_window(state_path):
     status_label.pack(pady=(0, 12))
 
     def refresh():
+        if owner_pid and not process_is_alive(owner_pid):
+            root.destroy()
+            return
         paused = read_state(state_path) == PAUSED
         status_var.set("Paused" if paused else "Running")
         button_var.set("Resume Bot" if paused else "Pause Bot")
@@ -93,6 +130,19 @@ def run_window(state_path):
             fg_color="#2F8F4E" if paused else "#AA2A2A",
             hover_color="#3DAF62" if paused else "#BB3A3A",
         )
+
+    def root_exists():
+        try:
+            return bool(root.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def refresh_loop():
+        if not root_exists():
+            return
+        refresh()
+        if root_exists():
+            root.after(750, refresh_loop)
 
     def toggle_pause():
         write_state(state_path, RUNNING if read_state(state_path) == PAUSED else PAUSED)
@@ -125,7 +175,7 @@ def run_window(state_path):
     hint.pack()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
-    refresh()
+    refresh_loop()
     root.mainloop()
 
 
