@@ -208,9 +208,27 @@ def pyla_main(data):
             )
 
             if self.low_ips_recovery_attempts >= self.low_ips_emulator_restart_after:
-                print("Low IPS did not recover after app/scrcpy restarts; restarting emulator profile.")
-                self.window_controller.restart_emulator_profile()
-                self.low_ips_recovery_attempts = 0
+                if frame_age <= 5:
+                    print(
+                        "Low IPS is still happening but scrcpy frames are fresh; "
+                        "skipping emulator restart and restarting Brawl Stars/scrcpy instead."
+                    )
+                    self.restart_brawl_stars()
+                    self.low_ips_recovery_attempts = max(
+                        self.low_ips_app_restart_after,
+                        self.low_ips_emulator_restart_after - 1,
+                    )
+                else:
+                    print("Low IPS did not recover after app/scrcpy restarts; restarting emulator profile.")
+                    if self.window_controller.restart_emulator_profile():
+                        self.low_ips_recovery_attempts = 0
+                    else:
+                        print("Emulator restart was not available; keeping bot alive and retrying scrcpy recovery.")
+                        self.window_controller.restart_scrcpy_client()
+                        self.low_ips_recovery_attempts = max(
+                            self.low_ips_app_restart_after,
+                            self.low_ips_emulator_restart_after - 1,
+                        )
             elif self.low_ips_recovery_attempts >= self.low_ips_app_restart_after:
                 print("Low IPS persisted; restarting Brawl Stars and scrcpy.")
                 self.restart_brawl_stars()

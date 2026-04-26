@@ -714,7 +714,11 @@ class WindowController:
         if not self.launch_saved_emulator_profile(wait_for_device=True, action="restart"):
             print("Emulator restart did not bring the profile online; trying explicit launch.")
             if not self.launch_saved_emulator_profile(wait_for_device=True, action="launch"):
-                raise ConnectionError("Could not restart emulator profile.")
+                print(
+                    "Could not restart emulator profile. "
+                    "If Windows says elevation is required, run the emulator once normally or install it without admin-only permissions."
+                )
+                return False
         time.sleep(3)
         self.start_scrcpy_client()
         if not _start_android_app(self.connected_serial, self.brawl_stars_package):
