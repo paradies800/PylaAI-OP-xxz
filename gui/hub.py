@@ -85,6 +85,7 @@ class Hub:
         self.general_config.setdefault("long_press_star_drop", "no")
         self.general_config.setdefault("trophies_multiplier", 1.0)
         self.general_config.setdefault("ocr_scale_down_factor", 0.5)
+        self.general_config.setdefault("lowest_trophy_brawler_slot", 1)
         self.general_config.setdefault("player_tag", "")
         self.general_config.setdefault("current_emulator", "LDPlayer")
         self.general_config.setdefault("emulator_port", 5555)
@@ -930,6 +931,14 @@ class Hub:
             convert_func=float,
             use_general_config=True,
             tooltip_text="Scale used for brawler-name OCR in the select menu. Lower is faster; adjust if it taps the wrong card."
+        )
+
+        create_labeled_entry(
+            label_text="Post-1k Brawler Slot:",
+            config_key="lowest_trophy_brawler_slot",
+            convert_func=lambda s: max(1, min(6, int(s))),
+            use_general_config=True,
+            tooltip_text="After sorting by Least Trophies, pick this brawler card slot. 1 is first, 2 is second."
         )
 
         create_labeled_entry(

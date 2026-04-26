@@ -108,17 +108,31 @@ class LobbyAutomation:
     def select_lowest_trophy_brawler(self):
         wr = self.window_controller.width_ratio
         hr = self.window_controller.height_ratio
+        general_config = load_toml_as_dict("cfg/general_config.toml")
+        try:
+            brawler_slot = int(general_config.get("lowest_trophy_brawler_slot", 1))
+        except (TypeError, ValueError):
+            brawler_slot = 1
+        brawler_slot = max(1, min(6, brawler_slot))
+        card_x, card_y = self.lowest_trophy_brawler_slot_coords(brawler_slot)
 
         def tap(x, y, wait=0.6):
             self.window_controller.click(int(x * wr), int(y * hr))
             time.sleep(wait)
 
-        print("Selecting next brawler by sorting lowest trophies.")
+        print(f"Selecting next brawler by sorting lowest trophies (slot {brawler_slot}).")
         tap(128, 500, 1.4)   # left Brawlers button in lobby
         tap(1210, 45, 0.6)   # sort dropdown
         tap(1210, 426, 1.0)  # Least Trophies
-        tap(422, 359, 1.0)   # first brawler card
+        tap(card_x, card_y, 1.0)  # configured brawler card slot
         tap(260, 991, 1.0)   # Select
+
+    @staticmethod
+    def lowest_trophy_brawler_slot_coords(slot):
+        slot = max(1, min(6, int(slot or 1)))
+        col = (slot - 1) % 3
+        row = (slot - 1) // 3
+        return 422 + col * 365, 359 + row * 313
 
     @staticmethod
     def resolve_ocr_typos(potential_brawler_name: str) -> str:
