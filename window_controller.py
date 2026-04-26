@@ -59,6 +59,7 @@ COMMON_MUMU_MANAGERS = [
 ]
 
 LOCAL_ADB_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adb.exe")
+ADB_SERVER_PORT = 5037
 
 
 def _infer_supported_emulator(configured_port):
@@ -69,6 +70,22 @@ def _infer_supported_emulator(configured_port):
     if configured_port in (16384, 16416, 16448, 7555):
         return "MuMu"
     return "LDPlayer"
+
+
+def _normalize_emulator_config(selected_emulator, configured_port):
+    selected_emulator = str(selected_emulator or "LDPlayer").strip()
+    try:
+        configured_port = int(configured_port)
+    except (TypeError, ValueError):
+        configured_port = 0
+
+    if configured_port == ADB_SERVER_PORT:
+        configured_port = 0
+
+    if selected_emulator not in EMULATOR_PORTS:
+        selected_emulator = _infer_supported_emulator(configured_port)
+
+    return selected_emulator, configured_port
 
 
 def _unique_ports(ports):
@@ -316,6 +333,20 @@ class WindowController:
         self.width_ratio = None
         self.height_ratio = None
         self.joystick_x, self.joystick_y = None, None
+        self.are_we_moving = False
+        self.PID_JOYSTICK = 1  # ID for WASD movement
+        self.PID_ATTACK = 2  # ID for clicks/attacks
+        self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
+        self.time_since_checked_if_brawl_stars_crashed = time.time()
+        self.foreground_check_failures = 0
+        self.foreground_failure_restart_threshold = int(
+            load_toml_as_dict("cfg/time_tresholds.toml").get("foreground_failure_restart_threshold", 4)
+        )
+        self.last_emulator_restart_time = 0.0
+        self.emulator_restart_cooldown = float(
+            load_toml_as_dict("cfg/time_tresholds.toml").get("emulator_restart_cooldown", 180)
+        )
+
         # --- 2. ADB & Scrcpy Connection ---
         print("Connecting to ADB...")
         try:
@@ -369,19 +400,17 @@ class WindowController:
                 return best_device, best_package
 
             general_config = load_toml_as_dict("cfg/general_config.toml")
-            selected_emulator = general_config.get("current_emulator", "LDPlayer")
-            configured_port = general_config.get("emulator_port", 0)
-            try:
-                configured_port = int(configured_port)
-            except (TypeError, ValueError):
-                configured_port = 0
+            raw_emulator = general_config.get("current_emulator", "LDPlayer")
+            raw_port = general_config.get("emulator_port", 0)
+            selected_emulator, configured_port = _normalize_emulator_config(raw_emulator, raw_port)
             self.brawl_stars_package = str(
                 general_config.get("brawl_stars_package", BRAWL_STARS_PACKAGE)
             ).strip()
-            if selected_emulator not in EMULATOR_PORTS:
-                inferred_emulator = _infer_supported_emulator(configured_port)
-                print(f"Unsupported emulator '{selected_emulator}' in config; using {inferred_emulator}.")
-                selected_emulator = inferred_emulator
+            if selected_emulator != raw_emulator or configured_port != raw_port:
+                print(
+                    f"Using supported emulator config: {selected_emulator} "
+                    f"port {configured_port or 'auto'}."
+                )
             self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 15))
             if self.scrcpy_max_fps <= 0:
                 self.scrcpy_max_fps = None
@@ -464,19 +493,6 @@ class WindowController:
 
         except Exception as e:
             raise ConnectionError(f"Failed to initialize Scrcpy: {e}")
-        self.are_we_moving = False
-        self.PID_JOYSTICK = 1  # ID for WASD movement
-        self.PID_ATTACK = 2  # ID for clicks/attacks
-        self.check_if_brawl_stars_crashed_timer = load_toml_as_dict("cfg/time_tresholds.toml")["check_if_brawl_stars_crashed"]
-        self.time_since_checked_if_brawl_stars_crashed = time.time()
-        self.foreground_check_failures = 0
-        self.foreground_failure_restart_threshold = int(
-            load_toml_as_dict("cfg/time_tresholds.toml").get("foreground_failure_restart_threshold", 4)
-        )
-        self.last_emulator_restart_time = 0.0
-        self.emulator_restart_cooldown = float(
-            load_toml_as_dict("cfg/time_tresholds.toml").get("emulator_restart_cooldown", 180)
-        )
 
     def _resolve_emulator_profile_index(self, general_config):
         configured_index = general_config.get("emulator_profile_index", "auto")

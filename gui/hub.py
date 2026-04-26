@@ -480,9 +480,16 @@ class Hub:
             return "LDPlayer"
 
         current_emulator = self.general_config.get("current_emulator", "LDPlayer")
+        try:
+            current_port = int(self.general_config.get("emulator_port", 0))
+        except (TypeError, ValueError):
+            current_port = 0
         if current_emulator not in supported_emulators:
             current_emulator = infer_supported_emulator(self.general_config.get("emulator_port"))
             self.general_config["current_emulator"] = current_emulator
+            self.general_config["emulator_port"] = supported_emulators[current_emulator]
+            save_dict_as_toml(self.general_config, self.general_config_path)
+        elif current_port == 5037:
             self.general_config["emulator_port"] = supported_emulators[current_emulator]
             save_dict_as_toml(self.general_config, self.general_config_path)
 

@@ -4,6 +4,7 @@ from window_controller import (
     WindowController,
     _infer_ldplayer_index,
     _infer_mumu_index,
+    _normalize_emulator_config,
 )
 
 
@@ -17,6 +18,18 @@ class EmulatorProfileMappingTest(unittest.TestCase):
         self.assertEqual(_infer_ldplayer_index(5555), 0)
         self.assertEqual(_infer_ldplayer_index(5557), 1)
         self.assertEqual(_infer_ldplayer_index(5559), 2)
+
+    def test_old_unsupported_emulator_config_never_uses_adb_server_port(self):
+        emulator, port = _normalize_emulator_config("BlueStacks", 5037)
+
+        self.assertEqual(emulator, "LDPlayer")
+        self.assertEqual(port, 0)
+
+    def test_mumu_config_keeps_supported_port(self):
+        emulator, port = _normalize_emulator_config("MuMu", 16448)
+
+        self.assertEqual(emulator, "MuMu")
+        self.assertEqual(port, 16448)
 
     def test_restart_target_follows_actual_connected_mumu_device(self):
         controller = object.__new__(WindowController)
